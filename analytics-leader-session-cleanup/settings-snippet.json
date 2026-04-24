@@ -1,0 +1,20 @@
+{
+  "_comment": "Claude Code settings.json 참조 스니펫. 기존 ~/.claude/settings.json 에 statusLine·hooks 필드가 이미 있으면 이 값으로 덮어쓰거나 병합. 둘 다 없으면 새로 넣는다. 분석팀장 외 세션(팀원 terminal) 에 영향 주지 않게 하려면 그대로 두면 됨 — statusline.py 와 user-prompt-submit.py 가 cwd 를 확인해 analytics-leader 가 아닐 때는 자동으로 no-op 처리한다.",
+  "statusLine": {
+    "type": "command",
+    "command": "python \"C:/Users/doodles/.claude/statusline.py\""
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"C:/Users/doodles/.claude/hooks/user-prompt-submit.py\""
+          }
+        ]
+      }
+    ]
+  }
+}
