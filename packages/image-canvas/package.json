@@ -1,0 +1,20 @@
+{
+  "name": "image-canvas",
+  "version": "1.0.0",
+  "description": "OpenAI gpt-image-1 기반 이미지 생성 MCP 서버. 페르소나·환경 비종속.",
+  "private": true,
+  "type": "module",
+  "main": "server.ts",
+  "scripts": {
+    "start": "tsx server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "openai": "^4.77.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
