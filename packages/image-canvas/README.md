@@ -1,6 +1,6 @@
 # image-canvas
 
-OpenAI `gpt-image-1` 기반 이미지 생성을 stdio MCP 서버로 노출하는 plain 패키지.
+OpenAI `gpt-image-2` 기반 이미지 생성을 stdio MCP 서버로 노출하는 plain 패키지.
 
 페르소나·도메인에 비종속이라 누구나 같은 도구를 쓰고, 그림의 색깔은 호출 측 CLAUDE.md
 프롬프트 레이어가 결정한다. 새벽·노을 자매 페르소나가 첫 사용처지만, 이후 다른 팀·다른

@@ -1,7 +1,7 @@
 /**
  * image-canvas MCP 서버
  *
- * OpenAI gpt-image-1 기반 이미지 생성 도구를 stdio MCP 로 노출한다.
+ * OpenAI gpt-image-2 기반 이미지 생성 도구를 stdio MCP 로 노출한다.
  * 단일 페르소나에 종속되지 않는 plain 패키지 — prompt 의 톤·페르소나는 호출 측 CLAUDE.md
  * 가 자연스럽게 얹는다.
  *
@@ -48,9 +48,9 @@ if (!existsSync(OUTPUT_DIR_ABS)) {
 
 const openai = new OpenAI(); // OPENAI_API_KEY 자동 사용
 
-const MODEL = "gpt-image-1";
+const MODEL = "gpt-image-2";
 const DEFAULT_SIZE = "1024x1024";
-// gpt-image-1 지원 size (정사각형·세로·가로·auto)
+// gpt-image-2 지원 size (정사각형·세로·가로·auto. 2K/4K 지원은 향후 별도 마이그레이션)
 const SUPPORTED_SIZES = new Set([
   "1024x1024",
   "1024x1536",
@@ -89,7 +89,7 @@ const mcp = new Server(
   {
     capabilities: { tools: {} },
     instructions: [
-      "OpenAI gpt-image-1 으로 PNG 이미지를 생성해 IMAGE_CANVAS_OUTPUT_DIR 에 저장한다.",
+      "OpenAI gpt-image-2 로 PNG 이미지를 생성해 IMAGE_CANVAS_OUTPUT_DIR 에 저장한다.",
       "도구는 generate_image 한 개. 프롬프트는 호출 측이 자유롭게 작성한다.",
     ].join("\n"),
   }
