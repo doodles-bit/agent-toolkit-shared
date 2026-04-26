@@ -17,11 +17,36 @@ Claude Code 세션의 ctx 사용률이 40% 를 상향 돌파하는 순간을 감
 
 설치는 `analytics-leader-session-cleanup/INSTALL.md` 를 읽고 분석팀장이 스스로 수행.
 
+### `packages/image-canvas/`
+OpenAI `gpt-image-1` 기반 이미지 생성 stdio MCP 서버. 도구 1개 (`generate_image`).
+페르소나·도메인 비종속 plain 패키지로, 호출 측 CLAUDE.md 가 프롬프트 톤·페르소나를
+얹는다. 첫 사용처는 Compass 외부의 새벽·노을 자매 페르소나(공유 출력 폴더 사용)지만,
+이후 다른 팀·페르소나가 같은 도구를 그대로 재사용할 수 있도록 설계했다.
+
+`packages/image-canvas/README.md` 의 `.mcp.json` 등록 예와 환경변수
+(`OPENAI_API_KEY`, `IMAGE_CANVAS_OUTPUT_DIR`) 안내를 따라 호출 측에서 설정.
+
+## 활용처 요약
+
+본 repo 가 다루는 패키지는 크게 세 갈래로 묶인다 (현 시점):
+
+1. **외부 팀(분석팀) 세션 정리 자동화** — `analytics-leader-session-cleanup/`.
+   private 운영 레포에 직접 접근 못 하는 외부 팀이 브라우저로 clone 해서 자기 환경에
+   설치할 수 있도록 패키지화한 첫 사례.
+2. **maintenance 이중화·공유 로그** — 본 repo 자체가 Compass 운영 중 안전 사고 후속으로
+   maintenance 가 작업 산출물을 공개 가능한 형태로 외부에 노출하는 *공식 허브* 가 됨
+   (메모: `t-20260424-bfb551`, public repo `doodles-bit/agent-toolkit-shared`).
+3. **페르소나·팀 간 공유 도구** — `packages/image-canvas/`. 새벽·노을 자매가 같은 도구를
+   페르소나 색깔별로 호출하는 패턴을 시작으로, 향후 다른 팀에서도 동일한 plain 도구를
+   재사용 가능하게 둔다.
+
 ## 환경 주의
 
 본 repo 의 패키지는 **특정 실행 환경 기준 경로** 가 하드코딩돼 있을 수 있음. 예:
 
 - `analytics-leader-session-cleanup/` 는 회사 PC `C:/Users/doodles/...` 기준.
+- `packages/image-canvas/` 의 사용 예시 경로는 Compass 운영 PC `C:/Users/pyeon/...`
+  기준. 다른 환경에서는 `IMAGE_CANVAS_OUTPUT_DIR` 절대경로만 환경에 맞게 바꿔주면 됨.
 
 다른 환경(다른 Windows 사용자명, macOS·Linux) 으로 이식하려면 각 패키지의 INSTALL.md 설계
 결정 메모 섹션을 참조해 경로 치환 필요. 민감정보는 아니며 상정된 대상 환경이 반영된 것.
