@@ -108,7 +108,12 @@ function log(...args: unknown[]) {
 }
 
 // ── 단일 인스턴스 락 ──
-const LOCK_FILE = join(dirname(fileURLToPath(import.meta.url)), "server.lock");
+// 기본은 server.ts 옆의 `server.lock`. 다중 에이전트(예: architect 인스턴스 + saebyeok-codex
+// Codex spawn) 가 같은 패키지를 동시에 띄우는 경우 lock 충돌로 한쪽이 다른 쪽을 kill 하므로
+// SLACK_CHANNEL_LOCK_FILE 환경변수로 인스턴스별 다른 경로를 지정해 격리할 수 있다.
+const LOCK_FILE =
+  (process.env.SLACK_CHANNEL_LOCK_FILE || "").trim() ||
+  join(dirname(fileURLToPath(import.meta.url)), "server.lock");
 
 function isProcessAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }

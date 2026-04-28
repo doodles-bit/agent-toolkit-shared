@@ -24,6 +24,7 @@ Slack 채널 폴링 + reply 도구를 노출하는 stdio MCP 서버. **clone-abl
 | `SLACK_REACTION_EMOJI` | ⬜ | `triangular_ruler` | 읽음 리액션 이름 (콜론 제외). 빈 문자열이면 리액션 비활성. |
 | `SLACK_CHANNEL_LABEL` | ⬜ | `(unspecified)` | 기본 instructions 의 채널 표기 라벨 (예: `#tech-desk`). 사람용. |
 | `SLACK_POLL_INTERVAL_MS` | ⬜ | `3000` | 폴링 주기 (ms). 최저 1000. |
+| `SLACK_CHANNEL_LOCK_FILE` | ⬜ | `<server.ts dir>/server.lock` | 단일 인스턴스 락 파일 절대경로. 다중 인스턴스가 같은 패키지를 spawn 할 때 충돌 방지용 — 인스턴스별 다른 경로 지정. |
 | `AGENT_NAME` | ⬜ | `slack-channel` | MCP 서버 이름 (식별자). |
 | `AGENT_VERSION` | ⬜ | `1.0.0` | MCP 서버 버전. |
 | `AGENT_INSTRUCTIONS_FILE` | ⬜ | — | 페르소나·운영 룰을 담은 파일 절대경로. 우선순위: 파일 > `AGENT_INSTRUCTIONS` > 기본 텍스트. |
