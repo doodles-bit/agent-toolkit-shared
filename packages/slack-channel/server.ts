@@ -25,6 +25,7 @@ import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, mk
 import { execFile, execSync } from "child_process";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { CodexClient } from "./codex-client.js";
 
 // ── 세션 내 중복 방지 ──
 const processedTs = new Set<string>();
@@ -156,9 +157,9 @@ function releaseLock() {
   } catch {}
 }
 
-process.on("SIGTERM", () => { releaseLock(); process.exit(0); });
-process.on("SIGINT", () => { releaseLock(); process.exit(0); });
-process.on("exit", () => { releaseLock(); });
+process.on("SIGTERM", () => { try { codex?.stop(); } catch {} releaseLock(); process.exit(0); });
+process.on("SIGINT", () => { try { codex?.stop(); } catch {} releaseLock(); process.exit(0); });
+process.on("exit", () => { try { codex?.stop(); } catch {} releaseLock(); });
 
 // ── 환경변수 (Windows User scope fallback) ──
 function resolveEnv(name: string): string {
@@ -221,6 +222,17 @@ const TRIGGER_ENABLED =
   process.platform === "win32" && TRIGGER_SCRIPT_PATH && TRIGGER_WINDOW;
 
 let lastTriggerTs = 0;
+
+// ── Codex MCP client (옵션 — CODEX_ENABLED=true 일 때만 spawn) ──
+const CODEX_ENABLED = (process.env.CODEX_ENABLED || "false").toLowerCase() === "true";
+const CODEX_BIN = process.env.CODEX_BIN || "codex";
+const CODEX_CWD = (process.env.CODEX_CWD || "").trim();
+const CODEX_REQUEST_TIMEOUT_MS = Math.max(
+  10_000,
+  Number(process.env.CODEX_REQUEST_TIMEOUT_MS) || 60_000
+);
+
+let codex: CodexClient | null = null;
 
 function triggerAgent() {
   if (!TRIGGER_ENABLED) return;
@@ -412,6 +424,35 @@ async function pushToSession(channel: string, msg: any) {
   };
   if (msg.thread_ts) meta.thread_ts = msg.thread_ts;
 
+  // Codex 모드 분기 — codex 자식 프로세스에 위임하고 응답을 Slack 채널 본문에 reply.
+  // 큐·트리거·Claude Code MCP 노출은 사용 안 함 (호출자 자체가 자율 응답).
+  if (CODEX_ENABLED && codex) {
+    void addReadReaction(channel, msg.ts);
+    try {
+      const reply = await codex.ask(channel, text);
+      log(`[poll] Codex reply (len=${reply.length}) → Slack ${channel}`);
+      await web.chat.postMessage({
+        channel,
+        text: reply,
+        unfurl_links: false,
+        unfurl_media: false,
+      });
+    } catch (err) {
+      log(`[poll] Codex 호출 실패: ${(err as Error).message}`);
+      // 페르소나 텍스트는 호출 측 (AGENTS.md 등) 책임. 시스템 fallback 만 plain 으로.
+      try {
+        await web.chat.postMessage({
+          channel,
+          text: `(시스템 알림) 응답 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.`,
+          unfurl_links: false,
+          unfurl_media: false,
+        });
+      } catch {}
+    }
+    return;
+  }
+
+  // 기본 동작 — Claude Code MCP 모드 (PR #5 동작 그대로)
   if (messageQueue.length >= QUEUE_MAX) messageQueue.shift();
   messageQueue.push({ content: text, meta, timestamp: Date.now() });
   log(`[poll] Queued message from ${msg.user} ts=${msg.ts} (queue: ${messageQueue.length})`);
@@ -479,6 +520,32 @@ async function main() {
   acquireLock();
   loadProcessedState();
 
+  // Codex 모드 — 자식 프로세스 spawn + initialize + tools/list 검증
+  if (CODEX_ENABLED) {
+    if (!CODEX_CWD) {
+      console.error(
+        "[slack-channel] CODEX_ENABLED=true 인데 CODEX_CWD 가 비어 있음. " +
+        "saebyeok-codex 같은 cwd 절대경로 필요."
+      );
+      process.exit(1);
+    }
+    codex = new CodexClient({
+      bin: CODEX_BIN,
+      cwd: CODEX_CWD,
+      requestTimeoutMs: CODEX_REQUEST_TIMEOUT_MS,
+      log,
+    });
+    try {
+      await codex.start();
+      log(`[slack] Codex MCP server connected (agent mode, cwd=${CODEX_CWD})`);
+    } catch (err) {
+      log(`[slack] Codex 시작 실패: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  } else {
+    log(`[slack] Claude Code MCP mode (CODEX_ENABLED=false)`);
+  }
+
   try {
     const auth = await web.auth.test();
     botUserId = (auth.user_id as string) || "";
@@ -497,7 +564,8 @@ async function main() {
   setInterval(pollAll, POLL_INTERVAL_MS);
   log(
     `[poll] Polling started (interval: ${POLL_INTERVAL_MS / 1000}s, channels: ${POLL_CHANNELS.join(",")}, ` +
-    `reaction: ${REACTION_EMOJI || "(off)"}, trigger: ${TRIGGER_ENABLED ? `${TRIGGER_WINDOW}` : "(off)"})`
+    `reaction: ${REACTION_EMOJI || "(off)"}, trigger: ${TRIGGER_ENABLED ? `${TRIGGER_WINDOW}` : "(off)"}, ` +
+    `codex: ${CODEX_ENABLED ? "on" : "off"})`
   );
 
   const transport = new StdioServerTransport();
