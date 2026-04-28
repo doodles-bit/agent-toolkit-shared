@@ -32,10 +32,25 @@ Slack 채널 폴링 + reply 도구를 노출하는 stdio MCP 서버. **clone-abl
 | `TRIGGER_WINDOW` | ⬜ | — | 트리거 대상 wt 탭 제목. `TRIGGER_SCRIPT_PATH` 와 함께 둘 다 있어야 트리거 작동. |
 | `TRIGGER_KEY` | ⬜ | `//slack` | 트리거가 클립보드 paste 할 키. |
 | `TRIGGER_DEBOUNCE_MS` | ⬜ | `3000` | 트리거 디바운스 (ms). |
+| `CODEX_ENABLED` | ⬜ | `false` | `true` 면 Codex MCP client 모드 활성. 메시지 수신 시 큐·트리거·MCP 노출 대신 codex 자식 프로세스를 호출해 응답을 Slack 채널에 reply. |
+| `CODEX_BIN` | ⬜ | `codex` | codex 실행 파일 경로·이름. |
+| `CODEX_CWD` | △ | — | codex `mcp-server` 의 cwd 절대경로. `CODEX_ENABLED=true` 일 때 *필수*. 새벽이용은 `dawn-dusk/saebyeok-codex/` 절대경로. |
+| `CODEX_REQUEST_TIMEOUT_MS` | ⬜ | `60000` | codex JSON-RPC 요청 타임아웃. 최저 10000. |
 
 `SLACK_APP_TOKEN` 은 *현 코드 미사용* — Socket Mode 또는 향후 확장 위한 placeholder. 필요 시 추후 별 라운드.
 
-## 셋업 (회사 PC Codex CLI 시나리오)
+## 두 가지 운영 모드
+
+본 서버는 *같은 코드베이스* 가 두 가지 모드로 동작:
+
+| 모드 | 활성 조건 | Slack 메시지 도착 시 | 응답 주체 |
+|---|---|---|---|
+| **Claude Code MCP** | `CODEX_ENABLED` 미설정 또는 `false` (기본) | 큐 적재 + (옵션) wt 탭 트리거 + `mcp.notification` 발사 | Claude Code 가 `get_pending_messages` 도구로 꺼내 자율 응답 |
+| **Codex MCP client** | `CODEX_ENABLED=true` + `CODEX_CWD` 설정 | `codex` 자식 프로세스의 `codex` / `codex-reply` 도구 호출 → 응답 텍스트를 Slack 채널 본문에 reply | codex 자식 (cwd 의 `AGENTS.md` 페르소나 + 메모리 자동 로드) |
+
+Codex 모드는 Slack ⇄ codex agent 간 *자동 왕복* — 호출 측 Claude Code 세션이 필요 없음. *옵션 D 검증* (새벽이 GPT-5.5 마이그레이션) 의 핵심 토포지.
+
+## 셋업 — Claude Code MCP 모드 (기본)
 
 ```bash
 # 1) 패키지 받기
@@ -50,6 +65,46 @@ setx SLACK_BOT_TOKEN "xoxb-XXXXXXXXXXXX-XXXXXXXXXXXXX-XXXXXXXXXXXXXXXXXXXXXXXX"
 # 3) 동작 확인 — stdio 라 직접 실행 시 바로 input 대기 모드.
 SLACK_ALLOWED_CHANNELS=C0AUCNQ3XHV npx tsx server.ts
 ```
+
+## 셋업 — Codex MCP client 모드 (회사 PC 검증 시나리오)
+
+새벽이 옵션 D 검증 흐름. 회사 PC 에서 격리된 Slack 봇 채널에 메시지 보내면 자동으로 `dawn-dusk/saebyeok-codex/` 의 페르소나 + 메모리를 로드한 codex agent 가 응답.
+
+```powershell
+# 1) 패키지 받기
+git clone https://github.com/doodles-bit/agent-toolkit-shared.git
+cd agent-toolkit-shared/packages/slack-channel
+npm install
+
+# 2) Codex CLI 설치 + 검증 봇 토큰 등록 (User scope)
+#    (codex 설치는 OpenAI 공식 문서 참조 — 본 패키지 범위 밖)
+setx SLACK_BOT_TOKEN "xoxb-..."   # 회사 PC 검증용 봇 토큰
+
+# 3) 새벽이 시드 디렉토리 도달 (clone / zip / rsync 중 결정된 방식)
+#    예: dawn-dusk/saebyeok-codex/ 가 C:/Users/<USER>/dawn-dusk/saebyeok-codex/ 에 위치
+#    그 sibling 으로 dawn-dusk/memory/shared/ 도 함께 위치 — AGENTS.md 의 ../memory/shared/ 참조 작동.
+
+# 4) 환경변수 설정 + 서버 시작
+$env:CODEX_ENABLED       = "true"
+$env:CODEX_CWD           = "C:/Users/<USER>/dawn-dusk/saebyeok-codex"
+$env:SLACK_ALLOWED_CHANNELS = "C0XXXXXXXXX"   # 검증 봇 채널 ID
+$env:SLACK_CHANNEL_LABEL = "#dawn-codex-test"
+$env:AGENT_NAME          = "saebyeok-codex"
+# 트리거는 Codex 모드에선 의미 없음 — 비워둠
+npx tsx server.ts
+
+# 5) 시작 로그에 다음 라인 보이면 통과:
+#    [codex] connected. tools=[codex, codex-reply, ...]
+#    [slack] Codex MCP server connected (agent mode, cwd=...)
+#    [poll] Polling started (..., codex: on)
+
+# 6) 검증 채널에 Slack 메시지 입력 → 새벽이 페르소나로 응답
+#    첫 메시지: codex tool 호출 → conversation_id 생성 + 맵 등록
+#    후속: codex-reply 호출 (같은 conversation_id) → 대화 이어짐
+#    AGENTS.md 의 메모리 읽기 5개 (persona/recent/shared/{summary,schedule,contacts}) 가 적용되는지 확인.
+```
+
+**`conversation_id` 추출 — 라이브 검증 이전 추정**: 본 client 는 codex 응답 result 객체에서 `_meta.conversationId`, `conversationId`, `conversation_id`, `structuredContent.*`, content text JSON 안 등 *여러 후보 경로* 를 순회해 추출. 실제 codex 응답 구조 확인 후 (첫 라이브 호출의 stderr 로그) 추출 로직 조정 필요. 추정된 모든 경로에서 못 찾으면 후속 메시지가 *새 대화* 로 처리됨 (대화 맥락 유실) — 이때 server.log 의 `[codex] 응답에서 conversation_id 못 찾음 — result keys: ...` 라인의 keys 로 정확한 경로 파악 후 `codex-client.ts:extractConversationId()` 갱신.
 
 ## Codex CLI 등록 예시 (`~/.codex/config.toml`)
 
@@ -102,6 +157,17 @@ AGENT_NAME = "architect-slack-channel"
 ```
 
 `SLACK_BOT_TOKEN` 은 `env` 블록에 *적지 않는다* — 부모 프로세스 (Claude Code) 가 User scope env 를 자동 상속해 자식 MCP 에게 전달.
+
+## Codex CLI 모드 — `.mcp.json` 또는 `~/.codex/config.toml` (선택)
+
+Codex MCP client 모드는 *Codex 자체* 를 자식으로 띄우는 자동 왕복 모드라 *외부 MCP host* (Claude Code, Codex CLI 등) 에 등록할 필요 *없음*. 단순히 OS 백그라운드 프로세스로 띄우면 됨:
+
+```powershell
+# Windows 서비스 또는 자동 시작 항목으로 등록 (선택)
+Start-Process -NoNewWindow -FilePath "npx" -ArgumentList "tsx C:/Users/<USER>/agent-toolkit-shared/packages/slack-channel/server.ts"
+```
+
+또는 단순히 PowerShell 창 열어두고 `npx tsx server.ts` 직접 실행. server.lock 으로 단일 인스턴스 보장.
 
 ## 페르소나별 운영 예시
 
