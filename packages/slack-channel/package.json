@@ -1,0 +1,22 @@
+{
+  "name": "@compass/slack-channel",
+  "version": "1.0.0",
+  "description": "Slack 채널 폴링 + reply 도구를 노출하는 stdio MCP 서버. 환경변수만으로 페르소나·채널·리액션 분기.",
+  "private": true,
+  "type": "module",
+  "main": "server.ts",
+  "scripts": {
+    "start": "tsx server.ts",
+    "dev": "tsx --watch server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@slack/web-api": "^7.15.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.2"
+  }
+}
