@@ -21,9 +21,9 @@ import {
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { WebClient } from "@slack/web-api";
-import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } from "fs";
+import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, statSync } from "fs";
 import { execFile, execSync } from "child_process";
-import { join, dirname } from "path";
+import { join, dirname, basename } from "path";
 import { fileURLToPath } from "url";
 import { CodexClient } from "./codex-client.js";
 
@@ -329,6 +329,21 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       description: "큐에 남아있는 미처리 메시지를 조회합니다. 조회 후 큐를 비웁니다.",
       inputSchema: { type: "object" as const, properties: {} },
     },
+    {
+      name: "upload_file",
+      description:
+        "파일을 Slack 채널에 첨부합니다. 절대 경로의 파일을 읽어 filesUploadV2 로 전송합니다. 이미지·문서·로그 등 모든 형식 지원.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          chat_id: { type: "string", description: "Slack 채널 또는 DM ID" },
+          file_path: { type: "string", description: "업로드할 파일의 절대 경로" },
+          comment: { type: "string", description: "동반 텍스트 (Slack initial_comment 로 매핑)" },
+          thread_ts: { type: "string", description: "스레드에 첨부할 경우 부모 메시지 ts" },
+        },
+        required: ["chat_id", "file_path"],
+      },
+    },
   ],
 }));
 
@@ -392,8 +407,95 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     const pending = drainQueue();
     return { content: [{ type: "text", text: `${pending}\n${status}` }] };
   }
+  if (req.params.name === "upload_file") {
+    const { chat_id, file_path, comment, thread_ts } = req.params.arguments as {
+      chat_id: string;
+      file_path: string;
+      comment?: string;
+      thread_ts?: string;
+    };
+
+    if (!chat_id || !file_path) {
+      return {
+        isError: true,
+        content: [{ type: "text", text: "chat_id 와 file_path 둘 다 필수입니다." }],
+      };
+    }
+    if (!existsSync(file_path)) {
+      return {
+        isError: true,
+        content: [{ type: "text", text: `파일 없음: ${file_path}` }],
+      };
+    }
+    let size: number;
+    try {
+      size = statSync(file_path).size;
+    } catch (err) {
+      return {
+        isError: true,
+        content: [{ type: "text", text: `파일 읽기 실패: ${(err as Error).message}` }],
+      };
+    }
+    const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+    if (size > MAX_UPLOAD_BYTES) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: `파일 크기 초과 ${(size / 1024 / 1024).toFixed(1)}MB > 50MB (Slack 자체 한도와 별개의 클라이언트 sanity check)`,
+          },
+        ],
+      };
+    }
+
+    // SDK 의 FilesUploadV2Arguments 가 channel/thread destination union 타입이라
+    // thread_ts 분기에서 strict TS inference 가 까다로움. 옵션 객체를 동적으로 빌드.
+    const opts: Record<string, unknown> = {
+      channel_id: chat_id,
+      file: file_path,
+      filename: basename(file_path),
+    };
+    if (comment) opts.initial_comment = comment;
+    if (thread_ts) opts.thread_ts = thread_ts;
+
+    log(`[upload] ${file_path} (${(size / 1024).toFixed(1)} KB) → ${chat_id}${thread_ts ? ` thread=${thread_ts}` : ""}`);
+    try {
+      const result = await web.filesUploadV2(opts as unknown as Parameters<typeof web.filesUploadV2>[0]);
+      const summary = formatUploadResult(result, chat_id);
+      log(`[upload] OK ${summary}`);
+      return { content: [{ type: "text", text: summary }] };
+    } catch (err: any) {
+      const reason = err?.data?.error || err?.code || (err as Error).message || "unknown";
+      log(`[upload] 실패 ${file_path} → ${chat_id}: ${reason}`);
+      return {
+        isError: true,
+        content: [{ type: "text", text: `Slack 업로드 실패: ${reason}` }],
+      };
+    }
+  }
   throw new Error(`Unknown tool: ${req.params.name}`);
 });
+
+// filesUploadV2 응답에서 file_id / permalink 추출. V2 응답 구조가 SDK 버전마다 약간 다를 수
+// 있어 (`files: [{ files: [{ id, permalink }] }]` vs `files: [{ id, permalink }]`) 두 경로
+// 모두 시도하고 안 보이면 단순 success 메시지.
+function formatUploadResult(result: unknown, chat_id: string): string {
+  const r = result as { files?: any[] };
+  const files = Array.isArray(r?.files) ? r.files : [];
+  const flat: any[] = [];
+  for (const entry of files) {
+    if (Array.isArray(entry?.files)) flat.push(...entry.files);
+    else flat.push(entry);
+  }
+  if (flat.length === 0) return `Uploaded to ${chat_id}`;
+  const ids = flat.map((f) => f?.id).filter(Boolean);
+  const permalinks = flat.map((f) => f?.permalink).filter(Boolean);
+  const parts = [`Uploaded to ${chat_id}`];
+  if (ids.length > 0) parts.push(`file_id=${ids.join(",")}`);
+  if (permalinks.length > 0) parts.push(permalinks[0]);
+  return parts.join(" — ");
+}
 
 // ── 텍스트 정리 ──
 function cleanText(text: string): string {
