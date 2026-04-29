@@ -10,7 +10,11 @@
  *   IMAGE_CANVAS_OUTPUT_DIR   (필수) — 생성 PNG 가 저장될 절대경로
  *
  * 도구
- *   generate_image(prompt, size?, n?) → 저장된 파일들의 절대 경로 배열(문자열, 줄단위)
+ *   generate_image(prompt, size?, n?, reference_images?) → 저장된 파일들의 절대 경로 (줄단위)
+ *
+ *   reference_images 가 비어있거나 미지정이면 텍스트→이미지 (`openai.images.generate`).
+ *   채워지면 image-to-image 모드로 분기 (`openai.images.edit`) — gpt-image-2 가 reference
+ *   image 입력을 native 지원 (최대 16장, 마스크 불필요).
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -19,10 +23,16 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { existsSync, mkdirSync, writeFileSync } from "fs";
-import { resolve } from "path";
+import {
+  existsSync,
+  mkdirSync,
+  writeFileSync,
+  createReadStream,
+  statSync,
+} from "fs";
+import { resolve, basename, extname } from "path";
 import { createHash } from "crypto";
-import OpenAI from "openai";
+import OpenAI, { toFile } from "openai";
 
 // ── 환경 검증 ──
 
@@ -59,10 +69,59 @@ const SUPPORTED_SIZES = new Set([
 ]);
 const MAX_N = 10;
 
+// ── reference_images 가드 ──
+// gpt-image-2 가 image-to-image 입력으로 받는 첨부 이미지 정책:
+//   - 최대 16장 (모델 한도)
+//   - png / jpg / jpeg / webp 지원
+//   - 50MB 상한 (sanity check; 실 한도는 OpenAI API 측 결정 — 그쪽에서 reject 시 isError 흡수)
+const MAX_REF_IMAGES = 16;
+const ALLOWED_REF_EXT = new Set([".png", ".jpg", ".jpeg", ".webp"]);
+const MAX_REF_BYTES = 50 * 1024 * 1024;
+
+interface RefOk {
+  ok: true;
+  abs: string;
+  ext: string;
+  size: number;
+}
+interface RefFail {
+  ok: false;
+  reason: string;
+}
+
+function validateReferenceImage(p: string): RefOk | RefFail {
+  const abs = resolve(p); // 상대 경로는 server.ts cwd 기준
+  if (!existsSync(abs)) return { ok: false, reason: `파일 없음: ${abs}` };
+  const ext = extname(abs).toLowerCase();
+  if (!ALLOWED_REF_EXT.has(ext)) {
+    return {
+      ok: false,
+      reason: `지원하지 않는 확장자 ${ext || "(없음)"} (${[...ALLOWED_REF_EXT]
+        .sort()
+        .join(", ")} 만)`,
+    };
+  }
+  let sz = 0;
+  try {
+    sz = statSync(abs).size;
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `stat 실패: ${(err as Error).message}`,
+    };
+  }
+  if (sz > MAX_REF_BYTES) {
+    return {
+      ok: false,
+      reason: `파일 크기 초과 ${(sz / 1024 / 1024).toFixed(1)}MB > ${MAX_REF_BYTES / 1024 / 1024}MB`,
+    };
+  }
+  return { ok: true, abs, ext, size: sz };
+}
+
 // ── 파일명 ──
 
 function timestampStem(): string {
-  // YYYYMMDD-HHMMSS (UTC)
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
   return (
@@ -85,12 +144,13 @@ function buildFilename(prompt: string, idx: number, total: number): string {
 // ── MCP 서버 ──
 
 const mcp = new Server(
-  { name: "image-canvas", version: "1.0.0" },
+  { name: "image-canvas", version: "1.1.0" },
   {
     capabilities: { tools: {} },
     instructions: [
       "OpenAI gpt-image-2 로 PNG 이미지를 생성해 IMAGE_CANVAS_OUTPUT_DIR 에 저장한다.",
       "도구는 generate_image 한 개. 프롬프트는 호출 측이 자유롭게 작성한다.",
+      "reference_images 가 채워지면 reference 기반 image-to-image 모드로 자동 분기.",
     ].join("\n"),
   }
 );
@@ -100,7 +160,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "generate_image",
       description:
-        "프롬프트로 이미지를 생성해 출력 디렉토리에 PNG 로 저장하고 절대 경로를 반환합니다.",
+        "프롬프트로 이미지를 생성해 출력 디렉토리에 PNG 로 저장하고 절대 경로를 반환합니다. reference_images 가 있으면 reference 기반 image-to-image 모드.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -116,6 +176,12 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           n: {
             type: "number",
             description: "생성 매수. 1~10 (기본 1)",
+          },
+          reference_images: {
+            type: "array",
+            description:
+              "참고 이미지 절대 경로 배열 (1~16장). 비어있거나 미지정이면 텍스트→이미지. 채워지면 reference 기반 image-to-image. 지원 확장자: png/jpg/jpeg/webp.",
+            items: { type: "string" },
           },
         },
         required: ["prompt"],
@@ -161,13 +227,75 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (n > MAX_N) n = MAX_N;
   n = Math.floor(n);
 
+  // reference_images 검증
+  const rawRefs = args.reference_images;
+  const refs: string[] = Array.isArray(rawRefs)
+    ? rawRefs.filter((x): x is string => typeof x === "string")
+    : [];
+  if (refs.length > MAX_REF_IMAGES) {
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: `reference_images ${refs.length} 장 — 최대 ${MAX_REF_IMAGES} 장까지 지원`,
+        },
+      ],
+    };
+  }
+  const validated: RefOk[] = [];
+  for (const r of refs) {
+    const v = validateReferenceImage(r);
+    if (!v.ok) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: `reference_images 가드 실패 (${r}): ${v.reason}`,
+          },
+        ],
+      };
+    }
+    validated.push(v);
+  }
+
+  const sizeTyped = size as
+    | "1024x1024"
+    | "1024x1536"
+    | "1536x1024"
+    | "auto";
+
   try {
-    const response = await openai.images.generate({
-      model: MODEL,
-      prompt,
-      size: size as "1024x1024" | "1024x1536" | "1536x1024" | "auto",
-      n,
-    });
+    let response;
+    if (validated.length === 0) {
+      // 텍스트→이미지
+      response = await openai.images.generate({
+        model: MODEL,
+        prompt,
+        size: sizeTyped,
+        n,
+      });
+    } else {
+      // image-to-image
+      const uploadables = await Promise.all(
+        validated.map((v) =>
+          toFile(createReadStream(v.abs), basename(v.abs))
+        )
+      );
+      const imageField =
+        uploadables.length === 1 ? uploadables[0] : uploadables;
+      console.error(
+        `[image-canvas] edit 분기: reference_images=${validated.length}장`
+      );
+      response = await openai.images.edit({
+        model: MODEL,
+        image: imageField,
+        prompt,
+        size: sizeTyped,
+        n,
+      });
+    }
 
     const data = response.data ?? [];
     if (data.length === 0) {
@@ -208,10 +336,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[image-canvas] generate 실패:`, msg);
+    console.error(`[image-canvas] 호출 실패:`, msg);
     return {
       isError: true,
-      content: [{ type: "text", text: `이미지 생성 실패: ${msg}` }],
+      content: [{ type: "text", text: `이미지 처리 실패: ${msg}` }],
     };
   }
 });

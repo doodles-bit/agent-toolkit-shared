@@ -8,17 +8,31 @@ OpenAI `gpt-image-2` 기반 이미지 생성을 stdio MCP 서버로 노출하는
 
 ## 도구
 
-### `generate_image(prompt, size?, n?)`
+### `generate_image(prompt, size?, n?, reference_images?)`
 
 | 파라미터 | 타입 | 기본 | 설명 |
 | --- | --- | --- | --- |
 | `prompt` | string | (필수) | 그릴 이미지에 대한 자연어 설명. 호출 측이 자유롭게 작성. |
 | `size`   | string | `1024x1024` | `1024x1024` / `1024x1536` / `1536x1024` / `auto` 중 하나. |
 | `n`      | number | `1` | 생성 매수, 1~10. |
+| `reference_images` | string[] | `[]` | 참고 이미지 절대 경로 배열, 1~16장. 비어있거나 미지정이면 텍스트→이미지. 채워지면 reference 기반 image-to-image 모드로 자동 분기. |
 
 반환: 저장된 PNG 의 절대 경로(들)를 줄단위 문자열로 묶어 반환.
 
 파일명 규칙: `<YYYYMMDD-HHMMSS>_<6char-hash>.png` (`n>1` 일 때 뒤에 `_2`, `_3` … 인덱스).
+
+### 두 가지 모드
+
+- **텍스트→이미지** (`reference_images` 비어있거나 미지정) — `openai.images.generate` 호출. 기존 동작 그대로.
+- **image-to-image** (`reference_images` 채워짐) — `openai.images.edit` 분기. gpt-image-2 가 reference image native 입력 지원 (최대 16장, 마스크 불필요). 원본 사진과 참고 일러스트를 동시에 넘겨 1:1 매칭 류 작업 가능.
+
+### reference_images 가드
+
+- 절대 경로 권장. 상대 경로는 server.ts cwd 기준 `path.resolve` 로 변환.
+- 확장자 화이트리스트: `.png` / `.jpg` / `.jpeg` / `.webp`.
+- 파일 존재 검사. 미존재 시 `isError` + 명확한 사유.
+- 50MB 상한 (sanity check). 실제 한도는 OpenAI API 측 결정.
+- 한 호출당 최대 16장. 초과 시 `isError`.
 
 ## 환경변수
 

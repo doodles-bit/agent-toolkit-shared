@@ -1,7 +1,7 @@
 {
   "name": "image-canvas",
-  "version": "1.0.1",
-  "description": "OpenAI gpt-image-2 기반 이미지 생성 MCP 서버. 페르소나·환경 비종속.",
+  "version": "1.1.0",
+  "description": "OpenAI gpt-image-2 기반 이미지 생성 MCP 서버 (텍스트→이미지 + reference 기반 image-to-image). 페르소나·환경 비종속.",
   "private": true,
   "type": "module",
   "main": "server.ts",
