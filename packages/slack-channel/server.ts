@@ -505,6 +505,64 @@ function cleanText(text: string): string {
   return text;
 }
 
+// ── 첨부 파일 캐시 ──
+// 와이프(또는 호출자)가 보낸 image/* 첨부를 영구 보존. 같은 file.id 가 다시 들어오면 캐시 hit.
+// TTL 없음 — Doodles 정책: "로컬 pc 라면 일단 영구로". 자동 정리 없음.
+// SLACK_FILE_CACHE_DIR env 로 인스턴스별 격리 가능 (LOCK_FILE override 패턴 — PR #7).
+// 다중 페르소나가 동시에 사용해도 캐시 충돌 없게 인스턴스별 다른 경로 지정 가능.
+const CACHE_DIR =
+  (process.env.SLACK_FILE_CACHE_DIR || "").trim() ||
+  join(dirname(fileURLToPath(import.meta.url)), ".cache", "files");
+
+function sanitizeFilename(name: string): string {
+  // 영숫자·-_. 외 모두 _ 로 치환. 길이 50자 제한.
+  let cleaned = name.replace(/[^A-Za-z0-9._-]/g, "_");
+  if (cleaned.length > 50) cleaned = cleaned.slice(0, 50);
+  return cleaned || "file";
+}
+
+interface FileDownloadOk { ok: true; path: string }
+interface FileDownloadFail { ok: false; reason: string }
+
+async function downloadSlackFile(file: any): Promise<FileDownloadOk | FileDownloadFail> {
+  const fileId: string = file?.id || "";
+  if (!fileId) return { ok: false, reason: "file.id 없음" };
+
+  const safeName = sanitizeFilename(file?.name || "file");
+  const target = join(CACHE_DIR, `${fileId}_${safeName}`);
+
+  // 캐시 hit — 같은 file.id 가 이미 받아져 있으면 다시 다운로드하지 않음
+  if (existsSync(target)) {
+    log(`[file] Cache hit ${fileId} → ${target}`);
+    return { ok: true, path: target };
+  }
+
+  const url: string = file?.url_private_download || "";
+  if (!url) return { ok: false, reason: "url_private_download 필드 없음" };
+
+  if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true });
+
+  log(`[file] Download start ${fileId} (${file?.mimetype || "?"}) → ${safeName}`);
+  try {
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${BOT_TOKEN}` },
+    });
+    if (!resp.ok) {
+      const reason = `HTTP ${resp.status} ${resp.statusText}`;
+      log(`[file] Download failed ${fileId}: ${reason}`);
+      return { ok: false, reason };
+    }
+    const buf = Buffer.from(await resp.arrayBuffer());
+    writeFileSync(target, buf);
+    log(`[file] Download done ${fileId} → ${target} (${buf.length} bytes)`);
+    return { ok: true, path: target };
+  } catch (err) {
+    const reason = (err as Error).message || String(err);
+    log(`[file] Download error ${fileId}: ${reason}`);
+    return { ok: false, reason };
+  }
+}
+
 // ── 세션 푸시 ──
 const RETRY_MAX = 5;
 const RETRY_DELAY_MS = 1000;
@@ -515,7 +573,10 @@ function sleep(ms: number) {
 
 async function pushToSession(channel: string, msg: any) {
   const text = cleanText(msg.text || "");
-  if (!text) return;
+  const files: any[] = Array.isArray(msg.files) ? msg.files : [];
+  // 텍스트도 파일도 없는 경우 (예: 시스템 이벤트) 만 early return.
+  // 캡션 없는 이미지 단독 업로드도 큐에 진입해 수신 사실을 인지하도록.
+  if (!text && files.length === 0) return;
 
   if (processedTs.has(msg.ts)) {
     log(`[poll] Skipping already-processed message ts=${msg.ts} (from persistent state)`);
@@ -531,13 +592,37 @@ async function pushToSession(channel: string, msg: any) {
   };
   if (msg.thread_ts) meta.thread_ts = msg.thread_ts;
 
+  // 첨부 파일 처리 — 이미지면 다운로드, 비이미지면 미지원 라인.
+  // 다운로드 실패는 예외로 던지지 않고 본문에 사유만 끼워 메시지 자체는 큐 진입.
+  const attachmentLines: string[] = [];
+  for (const file of files) {
+    const mimetype: string = file?.mimetype || "";
+    const fname: string = file?.name || file?.id || "file";
+    if (mimetype.startsWith("image/")) {
+      const result = await downloadSlackFile(file);
+      if (result.ok) {
+        attachmentLines.push(`[첨부 이미지: ${result.path}]`);
+      } else {
+        attachmentLines.push(`[첨부 이미지: 다운로드 실패 — ${result.reason}]`);
+      }
+    } else {
+      attachmentLines.push(`[첨부: ${fname} (${mimetype || "unknown"}) — 미지원]`);
+    }
+  }
+
+  // 본문 = 캡션 텍스트 + (있으면) 빈 줄 + 첨부 라인
+  let content = text;
+  if (attachmentLines.length > 0) {
+    content = content ? `${content}\n\n${attachmentLines.join("\n")}` : attachmentLines.join("\n");
+  }
+
   // Codex 모드 분기 — codex 자식 프로세스에 위임하고 응답을 Slack 채널 본문에 reply.
   // 큐·트리거·Claude Code MCP 노출은 사용 안 함 (호출자 자체가 자율 응답).
   if (CODEX_ENABLED && codex) {
     void addReadReaction(channel, msg.ts);
     try {
-      const reply = await codex.ask(channel, text);
-      log(`[poll] Codex reply (len=${reply.length}) → Slack ${channel}`);
+      const reply = await codex.ask(channel, content);
+      log(`[poll] Codex reply (len=${reply.length}, files=${files.length}) → Slack ${channel}`);
       await web.chat.postMessage({
         channel,
         text: reply,
@@ -561,8 +646,8 @@ async function pushToSession(channel: string, msg: any) {
 
   // 기본 동작 — Claude Code MCP 모드 (PR #5 동작 그대로)
   if (messageQueue.length >= QUEUE_MAX) messageQueue.shift();
-  messageQueue.push({ content: text, meta, timestamp: Date.now() });
-  log(`[poll] Queued message from ${msg.user} ts=${msg.ts} (queue: ${messageQueue.length})`);
+  messageQueue.push({ content, meta, timestamp: Date.now() });
+  log(`[poll] Queued message from ${msg.user} ts=${msg.ts} (files: ${files.length}, queue: ${messageQueue.length})`);
 
   triggerAgent();
 
@@ -570,7 +655,7 @@ async function pushToSession(channel: string, msg: any) {
     try {
       await mcp.notification({
         method: "notifications/claude/channel",
-        params: { content: text, meta },
+        params: { content, meta },
       });
       log(`[poll] Pushed message from ${msg.user} ts=${msg.ts} (attempt ${attempt})`);
       return;
