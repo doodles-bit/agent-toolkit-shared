@@ -32,7 +32,7 @@ Slack 채널 폴링 + reply 도구를 노출하는 stdio MCP 서버. **clone-abl
 | `AGENT_INSTRUCTIONS` | ⬜ | — | 짧은 instructions 직접 텍스트. 파일이 비어있을 때 사용. |
 | `TRIGGER_SCRIPT_PATH` | ⬜ | — | Claude Code wt 탭 자가 알림용 PowerShell 스크립트 경로 (Compass 의 `task-broker/trigger.ps1` 류). 비면 트리거 비활성. |
 | `TRIGGER_WINDOW` | ⬜ | — | 트리거 대상 wt 탭 제목. `TRIGGER_SCRIPT_PATH` 와 함께 둘 다 있어야 트리거 작동. |
-| `TRIGGER_KEY` | ⬜ | `//slack` | 트리거가 클립보드 paste 할 키. |
+| `TRIGGER_KEY` | ⬜ | `[slack]` | 트리거가 클립보드 paste 할 키. |
 | `TRIGGER_DEBOUNCE_MS` | ⬜ | `3000` | 트리거 디바운스 (ms). |
 | `CODEX_ENABLED` | ⬜ | `false` | `true` 면 Codex MCP client 모드 활성. 메시지 수신 시 큐·트리거·MCP 노출 대신 codex 자식 프로세스를 호출해 응답을 Slack 채널에 reply. |
 | `CODEX_BIN` | ⬜ | `codex` | codex 실행 파일 경로·이름. |

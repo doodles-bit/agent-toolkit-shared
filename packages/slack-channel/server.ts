@@ -7,7 +7,7 @@
  * 동작
  * - Slack `conversations.history` 폴링 → 새 메시지를 메모리 큐에 적재.
  * - reply / get_pending_messages 도구 노출 (MCP).
- * - 메시지 수령 시 옵션으로 PowerShell 트리거(`//slack`) 발사 (Claude Code wt 탭 자가 알림).
+ * - 메시지 수령 시 옵션으로 PowerShell 트리거(`[slack]`) 발사 (Claude Code wt 탭 자가 알림).
  * - drainQueue 시 옵션 리액션(`SLACK_REACTION_EMOJI`, 기본 `triangular_ruler`) 발사.
  * - processedTs 영속화·15분 룩백·서버 락(server.lock) 그대로.
  *
@@ -218,7 +218,7 @@ const AGENT_VERSION = process.env.AGENT_VERSION || "1.0.0";
 // ── 트리거 (옵션 — 비활성 가능) ──
 const TRIGGER_SCRIPT_PATH = (process.env.TRIGGER_SCRIPT_PATH || "").trim();
 const TRIGGER_WINDOW = (process.env.TRIGGER_WINDOW || "").trim();
-const TRIGGER_KEY = (process.env.TRIGGER_KEY || "//slack").trim();
+const TRIGGER_KEY = (process.env.TRIGGER_KEY || "[slack]").trim();
 const TRIGGER_DEBOUNCE_MS = Math.max(
   500,
   Number(process.env.TRIGGER_DEBOUNCE_MS) || 3000
