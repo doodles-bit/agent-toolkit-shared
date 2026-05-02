@@ -114,6 +114,8 @@ function log(...args: unknown[]) {
 const LOCK_FILE =
   (process.env.SLACK_CHANNEL_LOCK_FILE || "").trim() ||
   join(dirname(fileURLToPath(import.meta.url)), "server.lock");
+// SLACK_CHANNEL_NO_LOCK=1 시 lock 비활성 — MCP stdio 자식 모드에서 cascade kill 방지.
+const LOCK_ENABLED = !process.env.SLACK_CHANNEL_NO_LOCK;
 
 function isProcessAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -133,6 +135,7 @@ function killProcess(pid: number) {
 }
 
 function acquireLock() {
+  if (!LOCK_ENABLED) { log("[lock] Lock disabled (SLACK_CHANNEL_NO_LOCK)"); return; }
   if (existsSync(LOCK_FILE)) {
     try {
       const prevPid = parseInt(readFileSync(LOCK_FILE, "utf-8").trim(), 10);
@@ -151,6 +154,7 @@ function acquireLock() {
 }
 
 function releaseLock() {
+  if (!LOCK_ENABLED) return;
   try {
     if (existsSync(LOCK_FILE)) {
       const content = readFileSync(LOCK_FILE, "utf-8").trim();
