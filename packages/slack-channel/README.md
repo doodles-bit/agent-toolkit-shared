@@ -25,6 +25,7 @@ Slack 채널 폴링 + reply 도구를 노출하는 stdio MCP 서버. **clone-abl
 | `SLACK_CHANNEL_LABEL` | ⬜ | `(unspecified)` | 기본 instructions 의 채널 표기 라벨 (예: `#tech-desk`). 사람용. |
 | `SLACK_POLL_INTERVAL_MS` | ⬜ | `3000` | 폴링 주기 (ms). 최저 1000. |
 | `SLACK_CHANNEL_LOCK_FILE` | ⬜ | `<server.ts dir>/server.lock` | 단일 인스턴스 락 파일 절대경로. 다중 인스턴스가 같은 패키지를 spawn 할 때 충돌 방지용 — 인스턴스별 다른 경로 지정. |
+| `SLACK_CHANNEL_NO_LOCK` | ⬜ | — | `1` 로 설정 시 lock 완전 비활성. Claude Code `.mcp.json` spawn(MCP stdio 자식 모드) 에서 사용 — 새 자식이 Claude Code 연결 중인 기존 자식을 kill 하는 cascade 방지. 외부 `start-server.bat` 직접 실행은 미설정(lock 활성) 유지해 좀비 방지. |
 | `SLACK_FILE_CACHE_DIR` | ⬜ | `<server.ts dir>/.cache/files` | Slack 첨부 이미지 영구 캐시 디렉토리. 다중 인스턴스가 동시에 사용해도 충돌 없게 인스턴스별 다른 경로 지정 가능. 자동 정리 0 (Doodles 정책: 영구 보존). |
 | `AGENT_NAME` | ⬜ | `slack-channel` | MCP 서버 이름 (식별자). |
 | `AGENT_VERSION` | ⬜ | `1.0.0` | MCP 서버 버전. |
@@ -32,7 +33,7 @@ Slack 채널 폴링 + reply 도구를 노출하는 stdio MCP 서버. **clone-abl
 | `AGENT_INSTRUCTIONS` | ⬜ | — | 짧은 instructions 직접 텍스트. 파일이 비어있을 때 사용. |
 | `TRIGGER_SCRIPT_PATH` | ⬜ | — | Claude Code wt 탭 자가 알림용 PowerShell 스크립트 경로 (Compass 의 `task-broker/trigger.ps1` 류). 비면 트리거 비활성. |
 | `TRIGGER_WINDOW` | ⬜ | — | 트리거 대상 wt 탭 제목. `TRIGGER_SCRIPT_PATH` 와 함께 둘 다 있어야 트리거 작동. |
-| `TRIGGER_KEY` | ⬜ | `//slack` | 트리거가 클립보드 paste 할 키. |
+| `TRIGGER_KEY` | ⬜ | `[slack]` | 트리거가 클립보드 paste 할 키. |
 | `TRIGGER_DEBOUNCE_MS` | ⬜ | `3000` | 트리거 디바운스 (ms). |
 | `CODEX_ENABLED` | ⬜ | `false` | `true` 면 Codex MCP client 모드 활성. 메시지 수신 시 큐·트리거·MCP 노출 대신 codex 자식 프로세스를 호출해 응답을 Slack 채널에 reply. |
 | `CODEX_BIN` | ⬜ | `codex` | codex 실행 파일 경로·이름. |
