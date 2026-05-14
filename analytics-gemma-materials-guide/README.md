@@ -3,6 +3,9 @@
 작성일: 2026-05-13
 대상: 커뮤니티 댓글 요약, 번역, 센티멘트 분석을 수행하는 분석 에이전트
 
+Windows 회사 PC에서 Ollama 설치부터 Gemma 4 옵션 smoke test까지 막힌 지점을 복구해야
+한다면 [OLLAMA_GEMMA4_WINDOWS_SETUP.md](./OLLAMA_GEMMA4_WINDOWS_SETUP.md)를 먼저 본다.
+
 ## 결론
 
 Gemma는 최종 리포트를 쓰는 편집자보다, 원문에서 분석 재료를 뽑는 materials 추출기로
