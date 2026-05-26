@@ -222,57 +222,59 @@ DATABASE_URL=
 
 빈 값이든 실제 값이든 `.env`는 커밋하지 않는다.
 
-### 5. 수집 스크립트 준비
+### 5. 수집 스크립트 옵션 확인
 
-프로젝트마다 실제 스크립트 구현은 다를 수 있지만, 처음부터 아래 옵션을 받도록 만든다.
+이 패키지의 현재 CLI는 아래 옵션을 사용한다. 다른 프로젝트에 이 스크립트를 옮길 때도 이 이름을 기준으로 맞춘다.
 
 | option | required | meaning |
 |---|---:|---|
-| `--start-date` | yes | inclusive tweet date start |
-| `--end-date` | yes | inclusive tweet date end |
-| `--queries` | yes | comma-separated query list |
+| `--queries` 또는 `--query-file` | yes | comma-separated query list 또는 UTF-8 query file |
+| `--start-date` 또는 `--recent-days` | yes | inclusive start date 또는 최근 N일 |
+| `--end-date` | `--start-date` 사용 시 yes | inclusive end date |
+| `--timezone` | no | default `Asia/Tokyo` |
+| `--output-dir` | yes | 실행 산출물 폴더. `--prepare-login`에서는 불필요 |
 | `--window-days` | no | default `1` |
-| `--max-tweets-per-query-window` | no | default `100` |
+| `--max-posts-per-query-window` | no | default `100` |
 | `--max-no-new` | no | default `10` |
+| `--scroll-delay` | no | default `2` seconds |
+| `--page-delay` | no | default `2` seconds |
 | `--profile-dir` | no | default `.state/x_chrome_profile` |
-| `--output-root` | no | default `reports/operations` |
 | `--headless` | no | login 완료 후에만 사용 |
-| `--scrape-only` | no | raw만 저장 |
+| `--dry-run` | no | X.com 접속 없이 빈 산출물과 manifest 생성 |
+| `--fixture-csv` | no | fixture CSV에서 산출물 생성 |
+| `--prepare-login` | no | X.com home을 non-headless persistent profile로 열고 수집 없이 종료 |
+| `--login-wait-seconds` | no | `--prepare-login`에서 로그인 상태를 기다리는 시간, default `180` |
 
 가장 중요한 구현 요구사항:
 
 - Playwright persistent browser profile을 사용한다.
-- 첫 실행은 headless가 아닌 브라우저 창으로 띄운다.
+- 첫 인증 준비는 `--prepare-login`으로 headless가 아닌 브라우저 창에서 수행한다.
 - `https://x.com/home`에 접근해 로그인 여부를 확인한다.
 - 검색 URL은 `https://x.com/search?q=<query since:YYYY-MM-DD until:YYYY-MM-DD>&src=typed_query&f=live` 형태를 사용한다.
 - `tweet_url`을 반드시 저장한다.
 - 같은 run 안에서는 `tweet_url` 기준 중복을 제거한다.
-- `raw_observed_posts.csv`, `window_log.csv`, `manifest.json`을 저장한다.
+- `raw.csv`, `observed_posts.csv`, `window_log.csv`, `manifest.json`, `gap_check.md`를 저장한다.
 
 ### 6. X.com 로그인 세션 만들기
 
-첫 실행은 인증 준비 단계다. 이 단계에서는 수집 성공보다 로그인 세션 저장이 목적이다.
+첫 실행은 인증 준비 단계다. 이 단계에서는 수집을 시작하지 않고, `.state/x_chrome_profile`에 사용자가 직접 로그인한 브라우저 세션을 남기는 것이 목적이다.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
 python scripts\x_observed_search_collect.py `
-  --start-date 2026-01-01 `
-  --end-date 2026-01-01 `
-  --queries "#Topic" `
-  --window-days 1 `
-  --max-tweets-per-query-window 5 `
   --profile-dir .state\x_chrome_profile `
-  --scrape-only
+  --prepare-login `
+  --login-wait-seconds 300
 ```
 
-브라우저가 열리면 X.com에 직접 로그인한다. 2FA가 있으면 직접 처리한다. 로그인 후 home 화면이 보이면 스크립트가 검색을 이어가거나, 필요하면 한 번 종료하고 같은 명령을 다시 실행한다.
+브라우저가 열리면 X.com에 직접 로그인한다. 2FA가 있으면 직접 처리한다. 스크립트는 계정/비밀번호를 받지 않고, cookie를 export하지 않으며, 검색 수집도 시작하지 않는다. 종료 JSON의 `login_state`가 `logged-in`이면 같은 `--profile-dir`로 첫 smoke run을 실행한다. `login-required` 또는 `unknown`이면 브라우저에서 로그인 상태를 확인하고 같은 명령을 다시 실행한다.
 
 주의:
 
 - X 계정 ID/PW를 스크립트에 넣지 않는다.
 - cookie를 export해서 repo에 넣지 않는다.
 - `.state/x_chrome_profile` 폴더는 개인 PC에만 둔다.
-- 로그인 세션이 만료되면 같은 방식으로 다시 headless 없이 실행해 재로그인한다.
+- 로그인 세션이 만료되면 같은 `--prepare-login` 방식으로 다시 headless 없이 실행해 재로그인한다.
 
 ### 7. 첫 smoke run
 
@@ -283,17 +285,18 @@ python scripts\x_observed_search_collect.py `
   --start-date 2026-01-01 `
   --end-date 2026-01-01 `
   --queries "#Topic,Topic Name" `
+  --timezone Asia/Tokyo `
+  --output-dir reports\operations\topic-smoke-2026-01-01 `
   --window-days 1 `
-  --max-tweets-per-query-window 10 `
+  --max-posts-per-query-window 10 `
   --max-no-new 5 `
-  --profile-dir .state\x_chrome_profile `
-  --scrape-only
+  --profile-dir .state\x_chrome_profile
 ```
 
 pass 기준:
 
-- `reports/operations/<run_id>/manifest.json` 생성.
-- `raw_observed_posts.csv` 생성.
+- 지정한 `--output-dir` 아래 `manifest.json` 생성.
+- `raw.csv`, `observed_posts.csv`, `window_log.csv`, `gap_check.md` 생성.
 - X login 페이지로 되돌아가지 않음.
 - 0건이어도 `window_log.csv`에 검색 window와 query가 기록됨.
 
@@ -308,11 +311,12 @@ python scripts\x_observed_search_collect.py `
   --start-date 2026-01-01 `
   --end-date 2026-01-31 `
   --queries "#Topic,Topic Name,TopicName" `
+  --timezone Asia/Tokyo `
+  --output-dir reports\operations\topic-observed-2026-01 `
   --window-days 1 `
-  --max-tweets-per-query-window 100 `
+  --max-posts-per-query-window 100 `
   --max-no-new 10 `
-  --profile-dir .state\x_chrome_profile `
-  --scrape-only
+  --profile-dir .state\x_chrome_profile
 ```
 
 처음부터 `--headless`를 쓰지 않는다. 며칠 운용해서 로그인 세션이 안정적인 것을 확인한 뒤에만 headless를 켠다.
@@ -383,7 +387,7 @@ expanded: "Hi Fi Rush", "hifi rush", "Tango Hi-Fi Rush", "KRAFTON Hi-Fi Rush"
 아래 절차는 위의 `0부터 설치하기`와 첫 smoke run이 끝난 뒤의 운영 단계다.
 아직 X 로그인 세션이 없으면 이 단계로 바로 넘어가지 말고 먼저 `.state/x_chrome_profile`에 로그인 세션을 만든다.
 
-### 1. scrape-only로 raw 먼저 만들기
+### 1. raw 먼저 만들기
 
 분석이나 DB 업로드를 붙이기 전에 raw CSV만 만든다.
 
@@ -392,17 +396,19 @@ python scripts\x_observed_search_collect.py `
   --start-date 2026-01-01 `
   --end-date 2026-01-31 `
   --window-days 1 `
-  --max-tweets-per-query-window 100 `
+  --max-posts-per-query-window 100 `
   --max-no-new 10 `
   --queries "#Topic,Topic Name,TopicName" `
-  --scrape-only
+  --timezone Asia/Tokyo `
+  --output-dir reports\operations\x-topic-raw-2026-01 `
+  --profile-dir .state\x_chrome_profile
 ```
 
 실제 스크립트 이름은 프로젝트마다 달라도 된다. 다만 옵션 의미는 위 형태로 맞추면 다른 프로젝트에서도 재사용하기 쉽다. 새 환경에서는 처음 며칠 동안 `--headless`를 쓰지 않고 로그인 유지 상태를 확인한다.
 
 ### 2. raw union 만들기
 
-여러 pass를 실행한 뒤 모든 `raw_observed_posts.csv`를 `tweet_url` 기준으로 합친다.
+여러 pass를 실행한 뒤 모든 `raw.csv`를 `tweet_url` 기준으로 합친다.
 
 필수 검증:
 
@@ -428,25 +434,19 @@ python scripts\x_observed_search_collect.py `
   --start-date 2026-01-08 `
   --end-date 2026-01-08 `
   --window-days 1 `
-  --max-tweets-per-query-window 1000 `
+  --max-posts-per-query-window 1000 `
   --max-no-new 50 `
   --queries "#Topic,Topic Name,TopicName,topic name,TOPIC NAME" `
-  --scrape-only
+  --timezone Asia/Tokyo `
+  --output-dir reports\operations\x-topic-retry-2026-01-08 `
+  --profile-dir .state\x_chrome_profile
 ```
 
 재검색해도 0건이면 `현재 검색 surface 기준 0건`이라고 기록한다. `실제 0건`이라고 쓰지 않는다.
 
 ### 4. AI 분석은 별도 단계로 실행
 
-raw 수집이 끝난 뒤 필요한 경우에만 분석한다.
-
-```powershell
-python scripts\x_observed_search_collect.py `
-  --start-date 2026-01-01 `
-  --end-date 2026-01-31 `
-  --from-raw-csv reports\operations\x_topic_union\raw_observed_posts_union.csv `
-  --max-new-to-analyze 200
-```
+raw 수집이 끝난 뒤 필요한 경우에만 별도 분석 도구나 notebook에서 분석한다. 이 POC CLI는 X.com observed-search raw 수집과 fixture/dry-run 검증만 담당하며, AI 분석 옵션은 제공하지 않는다.
 
 권장 운영:
 
@@ -489,13 +489,14 @@ DB에 올리거나 분석용 parquet/csv로 확정하기 전 아래를 확인한
 reports/
   operations/
     x_topic_observed_YYYYMMDD_HHMMSS/
-      raw_observed_posts.csv
+      raw.csv
+      observed_posts.csv
       window_log.csv
-      new_rows_to_analyze.csv
-      analyzed_observed_posts.csv
       manifest.json
+      gap_check.md
     x_topic_union_YYYYMMDD/
-      raw_observed_posts_union.csv
+      raw_union.csv
+      observed_posts_union.csv
       union_manifest.json
       gap_check.md
 ```
@@ -509,8 +510,9 @@ manifest에는 최소 아래를 남긴다.
   "end_date": "2026-01-31",
   "window_days": 1,
   "queries": ["#Topic", "Topic Name", "TopicName"],
-  "raw_observed_rows": 1234,
+  "raw_rows": 1234,
   "distinct_urls": 1200,
+  "duplicate_url_rows": 34,
   "date_conflict_url_count": 0,
   "upload_requested": false
 }
@@ -544,7 +546,8 @@ X full archive API 기반 전체 언급량이 아니므로, 날짜별 비교는 
 
 - [ ] 검색어 core/expanded 세트 정의.
 - [ ] 날짜 범위와 timezone 기준 명시.
-- [ ] 1일 window scrape-only 실행.
+- [ ] `--prepare-login`으로 local profile 로그인 상태 확인.
+- [ ] 1일 window raw 수집 실행.
 - [ ] raw union 및 `tweet_url` dedupe.
 - [ ] 날짜별 0건/저건수 재검색.
 - [ ] manifest와 gap check 문서 작성.
