@@ -14,13 +14,14 @@ import csv
 import json
 import re
 import sys
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import quote_plus
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 SOURCE_LABEL = "Observed X.com public searchable posts"
@@ -57,15 +58,15 @@ def parse_args() -> argparse.Namespace:
             "observed_posts.csv, manifest.json, and gap_check.md."
         )
     )
-    query_group = parser.add_mutually_exclusive_group(required=True)
+    query_group = parser.add_mutually_exclusive_group()
     query_group.add_argument("--queries", help="Comma-separated query list.")
     query_group.add_argument("--query-file", type=Path, help="UTF-8 file with one query per line.")
-    date_group = parser.add_mutually_exclusive_group(required=True)
+    date_group = parser.add_mutually_exclusive_group()
     date_group.add_argument("--start-date", help="Inclusive start date, YYYY-MM-DD.")
     date_group.add_argument("--recent-days", type=int, help="Collect the most recent N days.")
     parser.add_argument("--end-date", help="Inclusive end date, YYYY-MM-DD. Required with --start-date.")
     parser.add_argument("--timezone", default="Asia/Tokyo", help="IANA timezone, default Asia/Tokyo.")
-    parser.add_argument("--output-dir", type=Path, required=True, help="Output directory for this run.")
+    parser.add_argument("--output-dir", type=Path, help="Output directory for this run.")
     parser.add_argument("--window-days", type=int, default=1, help="Date window size, default 1.")
     parser.add_argument("--max-posts-per-query-window", type=int, default=100)
     parser.add_argument("--max-no-new", type=int, default=10)
@@ -75,7 +76,51 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--headless", action="store_true", help="Use only after login profile is ready.")
     parser.add_argument("--fixture-csv", type=Path, help="Read observed rows from a fixture CSV instead of X.com.")
     parser.add_argument("--dry-run", action="store_true", help="Create empty artifacts and manifest without X.com access.")
-    return parser.parse_args()
+    parser.add_argument(
+        "--prepare-login",
+        action="store_true",
+        help="Open X.com home with the persistent profile and exit without collecting.",
+    )
+    parser.add_argument(
+        "--login-wait-seconds",
+        type=int,
+        default=180,
+        help="Seconds to wait for a visible login during --prepare-login.",
+    )
+    args = parser.parse_args()
+    validate_args(args, parser)
+    return args
+
+
+def validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    if args.prepare_login:
+        if args.headless:
+            parser.error("--prepare-login opens a visible browser; remove --headless.")
+        if args.fixture_csv or args.dry_run:
+            parser.error("--prepare-login cannot be combined with --fixture-csv or --dry-run.")
+        if args.login_wait_seconds <= 0:
+            parser.error("--login-wait-seconds must be positive.")
+        return
+    if not args.queries and not args.query_file:
+        parser.error("one of --queries or --query-file is required unless --prepare-login is used.")
+    if not args.start_date and args.recent_days is None:
+        parser.error("one of --start-date or --recent-days is required unless --prepare-login is used.")
+    if not args.output_dir:
+        parser.error("--output-dir is required unless --prepare-login is used.")
+
+
+def resolve_timezone(value: str) -> tzinfo:
+    try:
+        return ZoneInfo(value)
+    except ZoneInfoNotFoundError:
+        fixed_offsets = {
+            "Asia/Tokyo": timezone(timedelta(hours=9), "Asia/Tokyo"),
+            "Asia/Seoul": timezone(timedelta(hours=9), "Asia/Seoul"),
+            "UTC": timezone.utc,
+        }
+        if value in fixed_offsets:
+            return fixed_offsets[value]
+        raise
 
 
 def load_queries(args: argparse.Namespace) -> list[str]:
@@ -104,7 +149,7 @@ def parse_iso_date(value: str) -> date:
         raise argparse.ArgumentTypeError(f"invalid date {value!r}; expected YYYY-MM-DD") from exc
 
 
-def resolve_dates(args: argparse.Namespace, tz: ZoneInfo) -> tuple[date, date]:
+def resolve_dates(args: argparse.Namespace, tz: tzinfo) -> tuple[date, date]:
     if args.recent_days is not None:
         if args.recent_days <= 0:
             raise ValueError("--recent-days must be positive")
@@ -206,7 +251,73 @@ def filter_rows(rows: Iterable[dict[str, str]], queries: list[str], start: date,
     return filtered
 
 
-def collect_from_x(args: argparse.Namespace, queries: list[str], windows: list[DateWindow], tz: ZoneInfo) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
+def detect_login_state(page) -> str:
+    current_url = page.url.lower()
+    if "/i/flow/login" in current_url or "/login" in current_url:
+        return "login-required"
+    try:
+        logged_in_selectors = [
+            '[data-testid="SideNav_AccountSwitcher_Button"]',
+            '[data-testid="AppTabBar_Home_Link"]',
+            'a[href="/home"]',
+        ]
+        for selector in logged_in_selectors:
+            if page.locator(selector).count() > 0:
+                return "logged-in"
+        login_selectors = [
+            'a[href="/login"]',
+            'a[href*="/i/flow/login"]',
+            '[data-testid="loginButton"]',
+        ]
+        for selector in login_selectors:
+            if page.locator(selector).count() > 0:
+                return "login-required"
+    except Exception:
+        return "unknown"
+    return "unknown"
+
+
+def prepare_login(args: argparse.Namespace, tz: tzinfo) -> dict[str, object]:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise RuntimeError(
+            "Playwright is required for X.com login preparation. Install with "
+            "`python -m pip install -r requirements.txt` and `python -m playwright install chromium`."
+        ) from exc
+
+    args.profile_dir.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + args.login_wait_seconds
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=str(args.profile_dir),
+            headless=False,
+            viewport={"width": 1365, "height": 900},
+        )
+        page = context.new_page()
+        try:
+            page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=45_000)
+            login_state = detect_login_state(page)
+            while login_state != "logged-in" and time.monotonic() < deadline:
+                page.wait_for_timeout(2_000)
+                login_state = detect_login_state(page)
+            return {
+                "ok": login_state == "logged-in",
+                "mode": "prepare-login",
+                "generated_at": datetime.now(tz).isoformat(),
+                "profile_dir_used": str(args.profile_dir),
+                "login_state": login_state,
+                "current_url": page.url,
+                "headless": False,
+                "collection_started": False,
+                "credentials_handled_by_script": False,
+                "cookie_exported": False,
+            }
+        finally:
+            context.close()
+
+
+def collect_from_x(args: argparse.Namespace, queries: list[str], windows: list[DateWindow], tz: tzinfo) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
     try:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
         from playwright.sync_api import sync_playwright
@@ -363,7 +474,7 @@ def build_manifest(
     duplicate_rows: int,
     date_conflicts: int,
     mode: str,
-    tz: ZoneInfo,
+    tz: tzinfo,
     window_log: list[dict[str, object]],
 ) -> dict[str, object]:
     return {
@@ -451,7 +562,10 @@ def write_window_log(path: Path, window_log: list[dict[str, object]]) -> None:
 def main() -> int:
     args = parse_args()
     try:
-        tz = ZoneInfo(args.timezone)
+        tz = resolve_timezone(args.timezone)
+        if args.prepare_login:
+            print(json.dumps(prepare_login(args, tz), ensure_ascii=False))
+            return 0
         queries = load_queries(args)
         start, end = resolve_dates(args, tz)
         windows = build_windows(start, end, args.window_days)

@@ -41,7 +41,7 @@ class XObservedSearchCollectTest(unittest.TestCase):
             )
 
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            for name in ("raw.csv", "observed_posts.csv", "manifest.json", "gap_check.md"):
+            for name in ("raw.csv", "observed_posts.csv", "manifest.json", "gap_check.md", "window_log.csv"):
                 self.assertTrue((out_dir / name).exists(), name)
 
             with (out_dir / "manifest.json").open(encoding="utf-8") as f:
@@ -60,6 +60,25 @@ class XObservedSearchCollectTest(unittest.TestCase):
             gap_text = (out_dir / "gap_check.md").read_text(encoding="utf-8")
             self.assertIn("Observed X.com public searchable posts", gap_text)
             self.assertIn("전체 언급량으로 해석 금지", gap_text)
+
+    def test_prepare_login_does_not_require_query_date_or_output(self):
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--prepare-login",
+                "--headless",
+            ],
+            cwd=PACKAGE_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("--prepare-login opens a visible browser", proc.stderr)
+        self.assertNotIn("--output-dir is required", proc.stderr)
+        self.assertNotIn("one of --queries", proc.stderr)
 
 
 if __name__ == "__main__":
