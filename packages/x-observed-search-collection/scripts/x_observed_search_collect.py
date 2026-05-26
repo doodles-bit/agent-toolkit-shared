@@ -418,9 +418,15 @@ def text_contains_any(value: str, needles: Iterable[str]) -> bool:
     return any(needle.lower() in value_lower for needle in needles)
 
 
+def has_visible_search_results(signals: PageSignals) -> bool:
+    return signals.page_kind == "search" and signals.article_count > 0 and signals.status_link_count > 0
+
+
 def classify_page_state(signals: PageSignals) -> str:
     parsed_path = urlparse(signals.url).path.lower()
-    if signals.temporary_restriction_text or signals.rate_limit_text or signals.captcha_or_automation_text:
+    if signals.temporary_restriction_text or signals.rate_limit_text:
+        return "rate-limited-or-temporary-restricted"
+    if signals.captcha_or_automation_text and not has_visible_search_results(signals):
         return "rate-limited-or-temporary-restricted"
     if (
         "login" in parsed_path
@@ -492,7 +498,6 @@ def page_text_markers(page) -> dict[str, bool]:
                 "unusual activity",
                 "automated",
                 "verify you are human",
-                "認証",
             ),
         ),
         "search_empty_text": text_contains_any(

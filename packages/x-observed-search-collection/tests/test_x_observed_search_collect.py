@@ -233,6 +233,14 @@ class XObservedSearchCollectTest(unittest.TestCase):
                 module.PageSignals(
                     page_kind="search",
                     url="https://x.com/search?q=example&src=typed_query&f=live",
+                    captcha_or_automation_text=True,
+                ),
+                "rate-limited-or-temporary-restricted",
+            ),
+            (
+                module.PageSignals(
+                    page_kind="search",
+                    url="https://x.com/search?q=example&src=typed_query&f=live",
                     search_empty_text=True,
                 ),
                 "search-empty-state",
@@ -260,6 +268,19 @@ class XObservedSearchCollectTest(unittest.TestCase):
         for signals, expected in cases:
             with self.subTest(expected=expected):
                 self.assertEqual(module.classify_page_state(signals), expected)
+
+    def test_page_state_keeps_normal_esim_auth_results_ok(self):
+        module = load_collector_module()
+        signals = module.PageSignals(
+            page_kind="search",
+            url="https://x.com/search?q=%E9%9F%93%E5%9B%BDesim&src=typed_query&f=live",
+            article_count=5,
+            status_link_count=12,
+            captcha_or_automation_text=True,
+        )
+
+        self.assertEqual(module.classify_page_state(signals), "ok")
+        self.assertFalse(module.text_contains_any("韓国eSIM 認証コード 旅行者向け", ("captcha", "unusual activity", "automated", "verify you are human")))
 
     def test_debug_diagnostic_keeps_url_query_values_out(self):
         module = load_collector_module()
