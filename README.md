@@ -36,10 +36,11 @@ OpenAI `gpt-image-1` 기반 이미지 생성 stdio MCP 서버. 도구 1개 (`gen
 (`OPENAI_API_KEY`, `IMAGE_CANVAS_OUTPUT_DIR`) 안내를 따라 호출 측에서 설정.
 
 ### `packages/x-observed-search-collection/`
-X.com 공개 검색 화면에 노출되는 포스트를 주제별로 수집할 때 쓰는 운영 매뉴얼.
+X.com 공개 검색 화면에 노출되는 포스트를 주제별로 수집할 때 쓰는 운영 매뉴얼과 최소 CLI.
 full archive API 없이 브라우저 검색 surface를 날짜 window로 나누어 관측하고,
 로컬 환경 구성, X.com 브라우저 로그인 세션 생성, `tweet_url` dedupe, gap 재검색,
-AI 분석 guard, 보고서 한계 문구까지 포함한다.
+AI 분석 guard, 보고서 한계 문구까지 포함한다. CLI는 fixture/dry-run으로
+`raw.csv`, `observed_posts.csv`, `manifest.json`, `gap_check.md` 생성을 검증할 수 있다.
 집이나 개인 환경에서 다른 주제의 소셜 반응을 모을 때 `README.md` 절차를 기준으로 사용.
 
 ## 활용처 요약
