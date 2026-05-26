@@ -26,6 +26,27 @@
 6. 모든 산출물은 manifest와 함께 남긴다.
 7. 보고서에는 항상 관측 한계를 명시한다.
 
+## 시작 전 결정할 것
+
+아무것도 없는 상태라면 먼저 아래 네 가지를 정한다.
+
+| item | decision |
+|---|---|
+| 수집 주제 | 게임명, 브랜드명, 이벤트명, 인물명 등 |
+| 수집 기간 | `YYYY-MM-DD` 기준 시작일/종료일 |
+| 검색어 세트 | core query와 expanded query를 분리 |
+| 저장 위치 | 개인 PC의 로컬 프로젝트 폴더 |
+
+예:
+
+```text
+topic: Example Game
+period: 2026-01-01 ~ 2026-01-31
+core queries: "#ExampleGame", "Example Game", "ExampleGame"
+expanded queries: "example game", "EXAMPLE GAME", "Studio ExampleGame"
+output root: C:\Users\<you>\project_repo\x_observed_example_game
+```
+
 ## 준비물
 
 - Python 3.11+ 권장.
@@ -35,6 +56,186 @@
 - 로컬 저장 폴더. 예: `reports/operations/x_topic_collect_<date>/`.
 
 민감정보는 repo에 커밋하지 않는다. API 키, X 계정 정보, DB 토큰은 `.env` 또는 OS 환경변수로만 둔다.
+
+## 0부터 설치하기
+
+아래는 Windows PowerShell 기준이다. macOS/Linux는 path와 venv activate 명령만 바꾸면 된다.
+
+### 1. 로컬 프로젝트 폴더 만들기
+
+```powershell
+mkdir C:\Users\<you>\project_repo\x_observed_topic
+cd C:\Users\<you>\project_repo\x_observed_topic
+
+mkdir scripts
+mkdir reports
+mkdir reports\operations
+mkdir data
+mkdir data\raw
+mkdir data\processed
+mkdir .state
+```
+
+권장 구조:
+
+```text
+x_observed_topic/
+  .env
+  .gitignore
+  scripts/
+    x_observed_search_collect.py
+  reports/
+    operations/
+  data/
+    raw/
+    processed/
+  .state/
+    x_chrome_profile/
+```
+
+`.state/x_chrome_profile/`은 X 로그인 세션이 들어가는 로컬 브라우저 프로필이다. 절대 공유 repo에 올리지 않는다.
+
+### 2. Python 가상환경 만들기
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install playwright python-dotenv pandas
+python -m playwright install chromium
+```
+
+Chrome channel을 직접 쓰는 스크립트라면 `python -m playwright install chromium`이 없어도 될 수 있다. 처음 구성에서는 설치해 두는 편이 단순하다.
+
+### 3. `.gitignore` 만들기
+
+```text
+.venv/
+.env
+.state/
+reports/operations/
+data/raw/
+data/processed/
+*.log
+```
+
+raw 데이터와 로그인 세션, API 키는 기본적으로 커밋하지 않는다. 공유해야 할 것은 요약 문서, schema, 재현 가능한 query/manifest이다.
+
+### 4. `.env` 만들기
+
+처음에는 X API token이 필요 없다. 이 방식은 X API가 아니라 브라우저 로그인 세션을 사용한다.
+
+```text
+X_PROFILE_DIR=.state/x_chrome_profile
+OUTPUT_ROOT=reports/operations
+SEARCH_QUERIES=#Topic,Topic Name,TopicName
+SCROLL_DELAY=2
+```
+
+AI 분석이나 DB 업로드까지 붙일 때만 아래처럼 별도 값을 추가한다.
+
+```text
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5.4-mini
+DATABASE_URL=
+```
+
+빈 값이든 실제 값이든 `.env`는 커밋하지 않는다.
+
+### 5. 수집 스크립트 준비
+
+프로젝트마다 실제 스크립트 구현은 다를 수 있지만, 처음부터 아래 옵션을 받도록 만든다.
+
+| option | required | meaning |
+|---|---:|---|
+| `--start-date` | yes | inclusive tweet date start |
+| `--end-date` | yes | inclusive tweet date end |
+| `--queries` | yes | comma-separated query list |
+| `--window-days` | no | default `1` |
+| `--max-tweets-per-query-window` | no | default `100` |
+| `--max-no-new` | no | default `10` |
+| `--profile-dir` | no | default `.state/x_chrome_profile` |
+| `--output-root` | no | default `reports/operations` |
+| `--headless` | no | login 완료 후에만 사용 |
+| `--scrape-only` | no | raw만 저장 |
+
+가장 중요한 구현 요구사항:
+
+- Playwright persistent browser profile을 사용한다.
+- 첫 실행은 headless가 아닌 브라우저 창으로 띄운다.
+- `https://x.com/home`에 접근해 로그인 여부를 확인한다.
+- 검색 URL은 `https://x.com/search?q=<query since:YYYY-MM-DD until:YYYY-MM-DD>&src=typed_query&f=live` 형태를 사용한다.
+- `tweet_url`을 반드시 저장한다.
+- 같은 run 안에서는 `tweet_url` 기준 중복을 제거한다.
+- `raw_observed_posts.csv`, `window_log.csv`, `manifest.json`을 저장한다.
+
+### 6. X.com 로그인 세션 만들기
+
+첫 실행은 인증 준비 단계다. 이 단계에서는 수집 성공보다 로그인 세션 저장이 목적이다.
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python scripts\x_observed_search_collect.py `
+  --start-date 2026-01-01 `
+  --end-date 2026-01-01 `
+  --queries "#Topic" `
+  --window-days 1 `
+  --max-tweets-per-query-window 5 `
+  --profile-dir .state\x_chrome_profile `
+  --scrape-only
+```
+
+브라우저가 열리면 X.com에 직접 로그인한다. 2FA가 있으면 직접 처리한다. 로그인 후 home 화면이 보이면 스크립트가 검색을 이어가거나, 필요하면 한 번 종료하고 같은 명령을 다시 실행한다.
+
+주의:
+
+- X 계정 ID/PW를 스크립트에 넣지 않는다.
+- cookie를 export해서 repo에 넣지 않는다.
+- `.state/x_chrome_profile` 폴더는 개인 PC에만 둔다.
+- 로그인 세션이 만료되면 같은 방식으로 다시 headless 없이 실행해 재로그인한다.
+
+### 7. 첫 smoke run
+
+로그인 세션이 저장되었는지 확인하기 위해 아주 작은 범위를 돌린다.
+
+```powershell
+python scripts\x_observed_search_collect.py `
+  --start-date 2026-01-01 `
+  --end-date 2026-01-01 `
+  --queries "#Topic,Topic Name" `
+  --window-days 1 `
+  --max-tweets-per-query-window 10 `
+  --max-no-new 5 `
+  --profile-dir .state\x_chrome_profile `
+  --scrape-only
+```
+
+pass 기준:
+
+- `reports/operations/<run_id>/manifest.json` 생성.
+- `raw_observed_posts.csv` 생성.
+- X login 페이지로 되돌아가지 않음.
+- 0건이어도 `window_log.csv`에 검색 window와 query가 기록됨.
+
+0건은 실패가 아닐 수 있다. 하지만 검색 화면에서 수동으로 결과가 보이는데 raw가 0이면 selector, scroll, query encoding, 로그인 상태를 확인한다.
+
+### 8. 실제 수집으로 넘어가기
+
+smoke run이 통과한 뒤에만 실제 기간을 수집한다.
+
+```powershell
+python scripts\x_observed_search_collect.py `
+  --start-date 2026-01-01 `
+  --end-date 2026-01-31 `
+  --queries "#Topic,Topic Name,TopicName" `
+  --window-days 1 `
+  --max-tweets-per-query-window 100 `
+  --max-no-new 10 `
+  --profile-dir .state\x_chrome_profile `
+  --scrape-only
+```
+
+처음부터 `--headless`를 쓰지 않는다. 며칠 운용해서 로그인 세션이 안정적인 것을 확인한 뒤에만 headless를 켠다.
 
 ## 권장 데이터 스키마
 
@@ -99,6 +300,9 @@ expanded: "Hi Fi Rush", "hifi rush", "Tango Hi-Fi Rush", "KRAFTON Hi-Fi Rush"
 
 ## 권장 실행 절차
 
+아래 절차는 위의 `0부터 설치하기`와 첫 smoke run이 끝난 뒤의 운영 단계다.
+아직 X 로그인 세션이 없으면 이 단계로 바로 넘어가지 말고 먼저 `.state/x_chrome_profile`에 로그인 세션을 만든다.
+
 ### 1. scrape-only로 raw 먼저 만들기
 
 분석이나 DB 업로드를 붙이기 전에 raw CSV만 만든다.
@@ -114,7 +318,7 @@ python scripts\x_observed_search_collect.py `
   --scrape-only
 ```
 
-실제 스크립트 이름은 프로젝트마다 달라도 된다. 다만 옵션 의미는 위 형태로 맞추면 다른 프로젝트에서도 재사용하기 쉽다.
+실제 스크립트 이름은 프로젝트마다 달라도 된다. 다만 옵션 의미는 위 형태로 맞추면 다른 프로젝트에서도 재사용하기 쉽다. 새 환경에서는 처음 며칠 동안 `--headless`를 쓰지 않고 로그인 유지 상태를 확인한다.
 
 ### 2. raw union 만들기
 
