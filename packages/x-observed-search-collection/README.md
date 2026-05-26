@@ -57,6 +57,84 @@ output root: C:\Users\<you>\project_repo\x_observed_example_game
 
 민감정보는 repo에 커밋하지 않는다. API 키, X 계정 정보, DB 토큰은 `.env` 또는 OS 환경변수로만 둔다.
 
+## 포함된 최소 CLI
+
+이 패키지는 운영 매뉴얼과 함께 POC용 최소 수집 CLI를 포함한다.
+
+| path | role |
+|---|---|
+| `scripts/x_observed_search_collect.py` | X.com 공개 검색 화면 관측 수집 및 fixture/dry-run 산출물 생성 |
+| `queries/japan-tourism-ja.txt` | 일본어 한국 관광 POC query seed |
+| `tests/fixtures/japan_tourism_observed_fixture.csv` | dedupe/manifest/gap check 검증용 공개 fixture |
+| `tests/test_x_observed_search_collect.py` | fixture mode smoke test |
+
+CLI 산출물은 실행별 output directory 아래에 아래 이름으로 고정 생성된다.
+
+```text
+raw.csv
+observed_posts.csv
+manifest.json
+gap_check.md
+window_log.csv
+```
+
+`observed_posts.csv`는 `tweet_url` 기준 dedupe 결과다. `raw.csv`와 `window_log.csv`는 관측 경로와 gap 확인을 위한 자료이며, 실제 X.com 수집 결과물은 개인 raw 데이터로 취급한다.
+
+### Fixture smoke
+
+실제 X.com 접근 없이 산출물 생성과 dedupe를 검증한다.
+
+```powershell
+python scripts\x_observed_search_collect.py `
+  --query-file queries\japan-tourism-ja.txt `
+  --start-date 2026-05-24 `
+  --end-date 2026-05-26 `
+  --timezone Asia/Tokyo `
+  --output-dir reports\operations\fixture-smoke `
+  --fixture-csv tests\fixtures\japan_tourism_observed_fixture.csv
+```
+
+또는 unittest:
+
+```powershell
+python -m unittest tests.test_x_observed_search_collect
+```
+
+### Dry run
+
+쿼리/date window/manifest/gap file만 확인할 때 쓴다. X.com 접속이나 Playwright import가 없다.
+
+```powershell
+python scripts\x_observed_search_collect.py `
+  --query-file queries\japan-tourism-ja.txt `
+  --recent-days 3 `
+  --timezone Asia/Tokyo `
+  --output-dir reports\operations\dry-run `
+  --dry-run
+```
+
+### Live X.com observed-search smoke
+
+아래는 로그인 세션이 준비된 개인 환경에서만 소규모로 실행한다. 계정 ID/PW, cookie, `.state/x_chrome_profile`은 repo에 커밋하지 않는다.
+
+```powershell
+python -m pip install -r requirements.txt
+python -m playwright install chromium
+
+python scripts\x_observed_search_collect.py `
+  --query-file queries\japan-tourism-ja.txt `
+  --start-date 2026-05-25 `
+  --end-date 2026-05-25 `
+  --timezone Asia/Tokyo `
+  --output-dir reports\operations\jp-tourism-smoke `
+  --profile-dir .state\x_chrome_profile `
+  --max-posts-per-query-window 5 `
+  --max-no-new 3 `
+  --page-delay 3
+```
+
+처음 실행은 `--headless`를 쓰지 않는다. 브라우저가 열리면 사용자가 직접 로그인하고, 같은 profile dir을 이후에도 계속 쓴다. X 접근 제한이나 약관 우회는 하지 않는다.
+
 ## 0부터 설치하기
 
 아래는 Windows PowerShell 기준이다. macOS/Linux는 path와 venv activate 명령만 바꾸면 된다.
@@ -120,6 +198,8 @@ data/processed/
 ```
 
 raw 데이터와 로그인 세션, API 키는 기본적으로 커밋하지 않는다. 공유해야 할 것은 요약 문서, schema, 재현 가능한 query/manifest이다.
+
+본 패키지의 `.gitignore`도 `.state/`, `.env*`, `reports/operations/`, `data/raw/`, `data/processed/`, 브라우저 profile/cookie/session 파일, run output 기본 파일을 제외한다.
 
 ### 4. `.env` 만들기
 

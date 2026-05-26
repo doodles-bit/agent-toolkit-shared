@@ -1,0 +1,5 @@
+collect_date,tweet_date,author_handle,author_name,content,tweet_url,view_count,like_count,hashtags,language,image_urls,media_type,query,window_start,window_end
+2026-05-26,2026-05-24,travel_jp,Travel JP,韓国旅行で明洞のカフェに行った,https://x.com/travel_jp/status/1001,120,5,韓国旅行|明洞,ja,,text,韓国旅行,2026-05-24,2026-05-25
+2026-05-26,2026-05-24,travel_jp,Travel JP,韓国旅行で明洞のカフェに行った,https://x.com/travel_jp/status/1001,121,6,韓国旅行|明洞,ja,,text,明洞,2026-05-24,2026-05-25
+2026-05-26,2026-05-25,seoul_food,Seoul Food,韓国グルメと韓国カフェを巡る週末,https://x.com/seoul_food/status/1002,88,9,韓国グルメ|韓国カフェ,ja,,text,韓国グルメ,2026-05-25,2026-05-26
+2026-05-26,2026-05-26,airport_note,Airport Note,仁川空港でT-moneyをチャージした,https://x.com/airport_note/status/1003,44,2,T-money|仁川空港,ja,,text,T-money,2026-05-26,2026-05-27
