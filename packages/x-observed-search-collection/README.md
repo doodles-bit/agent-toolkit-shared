@@ -4,7 +4,224 @@
 
 중요한 전제: 이 방식은 X API full archive 수집이 아니다. 브라우저로 X.com 검색 결과에 실제 노출된 공개 포스트를 작은 날짜 구간으로 저장하는 방식이다. 따라서 보고서에서는 항상 `Observed X.com public searchable posts`, `관측된 X.com 공개 검색 결과`처럼 표현하고, `전체 트윗`, `전체 언급량`, `complete archive`라고 쓰지 않는다.
 
-## 언제 쓰는가
+## Quickstart Runbook
+
+처음 쓰는 사람은 이 섹션만 순서대로 따라간다. 아래 reference 섹션은 원리, 스키마, 운영 철학을 확인할 때만 본다.
+
+### 0. repo main 확인
+
+```powershell
+cd C:\Users\pyeon\project_repo\agent-toolkit-shared
+git fetch origin
+git status --short --branch
+git switch main
+git pull --ff-only origin main
+git log --oneline -1
+```
+
+성공 기준:
+
+- 현재 branch가 `main`이고 최신 commit이 기대한 PR merge commit이다.
+- `git status --short --branch`에 작업 중인 수정이 없다.
+
+실패하면 볼 것:
+
+- dirty checkout이면 여기서 멈춘다. 진행 중인 수정이 있으면 stash/revert하지 말고 별도 worktree를 쓰거나 담당자에게 확인한다.
+- `git pull --ff-only`가 실패하면 main이 로컬에서 갈라진 상태이므로 독단적으로 reset하지 않는다.
+
+### 1. package cwd 이동
+
+```powershell
+cd C:\Users\pyeon\project_repo\agent-toolkit-shared\packages\x-observed-search-collection
+python scripts\x_observed_search_collect.py --help
+```
+
+성공 기준:
+
+- help에 `--prepare-login`, `--max-posts-per-query-window`, `--fixture-csv`, `--dry-run`이 보인다.
+
+실패하면 볼 것:
+
+- `packages\x-observed-search-collection` 폴더가 없으면 main이 PR merge 전 상태인지 확인한다.
+- help에 없는 옵션을 문서나 명령에 쓰지 않는다.
+
+### 2. venv와 의존성 설치
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m playwright install chromium
+python -c "from zoneinfo import ZoneInfo; print(ZoneInfo('Asia/Tokyo'))"
+```
+
+성공 기준:
+
+- `pip install -r requirements.txt`가 `playwright`와 `tzdata`를 설치한다.
+- `playwright install chromium`이 Chromium 설치를 완료한다.
+- 마지막 Python 명령이 `Asia/Tokyo`를 출력한다.
+
+실패하면 볼 것:
+
+- timezone 에러가 나면 `python -m pip install tzdata`를 다시 실행한다.
+- Playwright browser missing 에러가 나면 `python -m playwright install chromium`을 다시 실행한다.
+- 회사/집 네트워크에서 다운로드가 막히면 여기서 중단하고 우회 다운로드나 자동 로그인 시도를 하지 않는다.
+
+### 3. 로그인 profile 준비
+
+```powershell
+python scripts\x_observed_search_collect.py `
+  --profile-dir .state\x_chrome_profile `
+  --prepare-login `
+  --login-wait-seconds 300
+```
+
+성공 기준:
+
+- 브라우저가 visible 모드로 열린다.
+- 사용자가 직접 X.com에 로그인한다.
+- 종료 JSON에 `"mode": "prepare-login"`, `"login_state": "logged-in"`, `"collection_started": false`, `"cookie_exported": false`가 나온다.
+
+실패하면 볼 것:
+
+- `"login_state": "login-required"` 또는 `"unknown"`이면 로그인 완료 전에 timeout 되었거나 X surface가 달라진 것이다. 같은 명령을 다시 실행해 직접 로그인 상태를 확인한다.
+- login URL이나 signup flow로 돌아가면 세션이 준비되지 않은 상태다. 계정/비밀번호를 스크립트에 넣지 않는다.
+- `--prepare-login`은 `--headless`, `--dry-run`, `--fixture-csv`와 함께 쓰지 않는다.
+
+### 4. fixture smoke
+
+```powershell
+python scripts\x_observed_search_collect.py `
+  --query-file queries\japan-tourism-ja.txt `
+  --start-date 2026-05-24 `
+  --end-date 2026-05-26 `
+  --timezone Asia/Tokyo `
+  --output-dir reports\operations\fixture-smoke `
+  --fixture-csv tests\fixtures\japan_tourism_observed_fixture.csv
+```
+
+성공 기준:
+
+- JSON에 `"mode": "fixture"`, `"raw_rows": 4`, `"distinct_urls": 3`, `"duplicate_url_rows": 1`이 나온다.
+- `reports\operations\fixture-smoke\raw.csv`, `observed_posts.csv`, `manifest.json`, `gap_check.md`, `window_log.csv`가 생긴다.
+
+실패하면 볼 것:
+
+- fixture path, query file path, 날짜 범위를 먼저 확인한다.
+- 이 단계는 X.com에 접속하지 않는다. 여기서 실패하면 브라우저나 로그인 문제가 아니라 로컬 CLI/파일 문제다.
+
+### 5. dry-run
+
+```powershell
+python scripts\x_observed_search_collect.py `
+  --queries "韓国旅行,ソウル旅行,仁川空港" `
+  --start-date 2026-05-25 `
+  --end-date 2026-05-25 `
+  --timezone Asia/Tokyo `
+  --output-dir reports\operations\dry-run-jp-tourism-2026-05-25 `
+  --dry-run
+```
+
+성공 기준:
+
+- JSON에 `"mode": "dry-run"`, `"raw_rows": 0`, `"distinct_urls": 0`이 나온다.
+- `window_log.csv`에 세 query와 `2026-05-25` since / `2026-05-26` until window가 기록된다.
+
+실패하면 볼 것:
+
+- `--queries`, `--start-date`, `--end-date`, `--output-dir`가 빠졌는지 확인한다.
+- dry-run은 X.com에 접속하지 않는다. 여기서 실패하면 명령 옵션이나 로컬 파일 쓰기 권한 문제다.
+
+### 6. unittest
+
+```powershell
+python -m unittest tests.test_x_observed_search_collect
+```
+
+성공 기준:
+
+- `Ran 2 tests`와 `OK`가 나온다.
+
+실패하면 볼 것:
+
+- fixture/dry-run 산출물 이름이 바뀌었거나 argparse 검증이 깨졌는지 확인한다.
+- 테스트 실패 상태에서 live smoke로 넘어가지 않는다.
+
+### 7. login-profile smoke
+
+로그인 profile이 실제 검색 화면에서도 재사용되는지 아주 작게 본다. 이 단계부터 X.com에 접속한다.
+
+```powershell
+python scripts\x_observed_search_collect.py `
+  --queries "韓国旅行" `
+  --recent-days 1 `
+  --timezone Asia/Tokyo `
+  --output-dir reports\operations\login-profile-smoke `
+  --profile-dir .state\x_chrome_profile `
+  --max-posts-per-query-window 1 `
+  --max-no-new 1 `
+  --page-delay 3
+```
+
+성공 기준:
+
+- JSON이 `"mode": "live"`로 종료한다.
+- `manifest.json`과 `window_log.csv`가 생성된다.
+- `window_log.csv` status가 `ok` 또는 `no-visible-results`로 기록된다.
+
+실패하면 볼 것:
+
+- login URL로 돌아가거나 `X.com login is required`가 나오면 3단계로 돌아가 profile을 다시 준비한다.
+- `no-visible-results`는 실패가 아닐 수 있다. 비로그인 surface 제한, 검색 surface 비결정성, 실제 저건수, selector 변화 가능성을 구분해야 한다.
+- selector timeout이 반복되고 수동 화면에는 결과가 보이면 selector 변경 가능성을 코드 이슈로 기록한다.
+
+### 8. 날짜 조건 live smoke
+
+처음 실행은 seed 중 3개와 하루 범위만 쓴다.
+
+```powershell
+python scripts\x_observed_search_collect.py `
+  --queries "韓国旅行,ソウル旅行,仁川空港" `
+  --start-date 2026-05-25 `
+  --end-date 2026-05-25 `
+  --timezone Asia/Tokyo `
+  --output-dir reports\operations\jp-tourism-smoke-2026-05-25 `
+  --profile-dir .state\x_chrome_profile `
+  --max-posts-per-query-window 5 `
+  --max-no-new 3 `
+  --page-delay 3
+```
+
+성공 기준:
+
+- 산출물 5종이 생성된다: `raw.csv`, `observed_posts.csv`, `manifest.json`, `gap_check.md`, `window_log.csv`.
+- `manifest.json`의 `source`가 `Observed X.com public searchable posts`다.
+- `raw_rows`, `distinct_urls`, `duplicate_url_rows`를 보고한다.
+
+실패하면 볼 것:
+
+- 모든 query가 `no-visible-results`이면 `gap_check.md`의 0건 날짜와 `window_log.csv`를 함께 보고한다. 전체 트윗 0건으로 쓰지 않는다.
+- X 접근 제한, captcha, login 요구가 보이면 credentials 입력 없이 중단한다.
+- 대량 수집, cookie export, 자동 로그인, headless 강제 전환은 하지 않는다.
+
+### 9. 산출물과 git 안전 확인
+
+```powershell
+git status --short --ignored
+git check-ignore -v .state\x_chrome_profile reports\operations\jp-tourism-smoke-2026-05-25\raw.csv
+```
+
+성공 기준:
+
+- `.state/`와 `reports/operations/`가 ignored로 표시된다.
+- raw/profile/session/cookie가 git commit 대상에 들어가지 않는다.
+
+실패하면 볼 것:
+
+- `.gitignore`가 적용되지 않으면 수집을 멈추고 먼저 ignore 규칙을 보강한다.
+
+## Reference: 언제 쓰는가
 
 - 공식 X full archive API를 쓸 수 없지만 특정 주제의 공개 반응 흐름을 관측하고 싶을 때.
 - 일별 추이, 키워드별 관측량, 대표 포스트, 감성/유형 분류 후보를 만들고 싶을 때.
