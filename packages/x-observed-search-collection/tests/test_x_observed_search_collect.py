@@ -112,6 +112,7 @@ class XObservedSearchCollectTest(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("--login-browser", proc.stdout)
+        self.assertIn("--debug-snapshot", proc.stdout)
         self.assertIn("Installed browser for --prepare-login and live", proc.stdout)
         self.assertIn("collection falls back to bundled Chromium", proc.stdout)
 
@@ -163,6 +164,80 @@ class XObservedSearchCollectTest(unittest.TestCase):
         with patch.object(module, "installed_browser_candidates", return_value=[]):
             with self.assertRaisesRegex(RuntimeError, "No installed Chrome browser found"):
                 module.resolve_collection_browser("chrome")
+
+    def test_page_state_classification_distinguishes_live_zero_causes(self):
+        module = load_collector_module()
+        cases = [
+            (
+                module.PageSignals(
+                    page_kind="home",
+                    url="https://x.com/i/flow/login",
+                    account_input_count=1,
+                ),
+                "login-required",
+            ),
+            (
+                module.PageSignals(
+                    page_kind="home",
+                    url="https://x.com/home",
+                    temporary_restriction_text=True,
+                ),
+                "rate-limited-or-temporary-restricted",
+            ),
+            (
+                module.PageSignals(
+                    page_kind="search",
+                    url="https://x.com/search?q=example&src=typed_query&f=live",
+                    search_empty_text=True,
+                ),
+                "search-empty-state",
+            ),
+            (
+                module.PageSignals(
+                    page_kind="search",
+                    url="https://x.com/search?q=example&src=typed_query&f=live",
+                    article_count=0,
+                    status_link_count=0,
+                ),
+                "selector-no-articles",
+            ),
+            (
+                module.PageSignals(
+                    page_kind="search",
+                    url="https://x.com/search?q=example&src=typed_query&f=live",
+                    article_count=2,
+                    status_link_count=0,
+                ),
+                "selector-no-status-links",
+            ),
+        ]
+
+        for signals, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(module.classify_page_state(signals), expected)
+
+    def test_debug_diagnostic_keeps_url_query_values_out(self):
+        module = load_collector_module()
+        signals = module.PageSignals(
+            page_kind="search",
+            url="https://x.com/search?q=secret+query&src=typed_query&f=live",
+            article_count=0,
+        )
+
+        diagnostic = module.signals_to_diagnostic(
+            "search-1",
+            signals,
+            "selector-no-articles",
+            module.timezone.utc,
+        )
+        diagnostic_json = json.dumps(diagnostic, ensure_ascii=False)
+
+        self.assertEqual(diagnostic["url_host"], "x.com")
+        self.assertEqual(diagnostic["url_path"], "/search")
+        self.assertEqual(diagnostic["url_query_keys"], ["f", "q", "src"])
+        self.assertNotIn("secret+query", diagnostic_json)
+        self.assertNotIn("raw_html", diagnostic.get("signals", {}))
+        self.assertIn("localStorage", diagnostic["not_saved"])
 
 
 if __name__ == "__main__":

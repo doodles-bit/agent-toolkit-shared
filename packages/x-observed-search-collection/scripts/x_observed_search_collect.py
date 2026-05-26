@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import quote_plus
+from urllib.parse import parse_qsl, quote_plus, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
@@ -64,6 +64,21 @@ class CollectionBrowser:
     fallback_to_bundled_chromium: bool = False
 
 
+@dataclass(frozen=True)
+class PageSignals:
+    page_kind: str
+    url: str
+    article_count: int = 0
+    status_link_count: int = 0
+    password_input_count: int = 0
+    account_input_count: int = 0
+    login_prompt_text: bool = False
+    temporary_restriction_text: bool = False
+    rate_limit_text: bool = False
+    captcha_or_automation_text: bool = False
+    search_empty_text: bool = False
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -95,6 +110,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fixture-csv", type=Path, help="Read observed rows from a fixture CSV instead of X.com.")
     parser.add_argument("--dry-run", action="store_true", help="Create empty artifacts and manifest without X.com access.")
     parser.add_argument(
+        "--debug-snapshot",
+        action="store_true",
+        help=(
+            "In live mode, write diagnostics.json with safe URL parts, selector counts, and boolean page signals. "
+            "Never writes cookies, localStorage, session storage, screenshots, or raw HTML."
+        ),
+    )
+    parser.add_argument(
         "--prepare-login",
         "--open-login-profile",
         dest="prepare_login",
@@ -122,6 +145,8 @@ def validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
             parser.error("--prepare-login opens a visible browser; remove --headless.")
         if args.fixture_csv or args.dry_run:
             parser.error("--prepare-login cannot be combined with --fixture-csv or --dry-run.")
+        if args.debug_snapshot:
+            parser.error("--prepare-login cannot be combined with --debug-snapshot.")
         return
     if not args.queries and not args.query_file:
         parser.error("one of --queries or --query-file is required unless --prepare-login is used.")
@@ -331,6 +356,169 @@ def resolve_collection_browser(kind: str) -> CollectionBrowser:
     )
 
 
+def safe_url_summary(url: str) -> dict[str, object]:
+    parsed = urlparse(url)
+    return {
+        "url_host": parsed.netloc,
+        "url_path": parsed.path,
+        "url_query_keys": sorted({key for key, _value in parse_qsl(parsed.query, keep_blank_values=True)}),
+    }
+
+
+def text_contains_any(value: str, needles: Iterable[str]) -> bool:
+    value_lower = value.lower()
+    return any(needle.lower() in value_lower for needle in needles)
+
+
+def classify_page_state(signals: PageSignals) -> str:
+    parsed_path = urlparse(signals.url).path.lower()
+    if signals.temporary_restriction_text or signals.rate_limit_text or signals.captcha_or_automation_text:
+        return "rate-limited-or-temporary-restricted"
+    if (
+        "login" in parsed_path
+        or "/i/flow/login" in parsed_path
+        or signals.password_input_count > 0
+        or signals.account_input_count > 0
+        or signals.login_prompt_text
+    ):
+        return "login-required"
+    if signals.page_kind == "search":
+        if signals.search_empty_text:
+            return "search-empty-state"
+        if signals.article_count == 0:
+            return "selector-no-articles"
+        if signals.status_link_count == 0:
+            return "selector-no-status-links"
+    return "ok"
+
+
+def locator_count(page, selector: str) -> int:
+    try:
+        return page.locator(selector).count()
+    except Exception:
+        return 0
+
+
+def page_text_markers(page) -> dict[str, bool]:
+    try:
+        body_text = page.locator("body").inner_text(timeout=1_500)
+    except Exception:
+        body_text = ""
+    return {
+        "login_prompt_text": text_contains_any(
+            body_text,
+            (
+                "sign in to x",
+                "log in to x",
+                "x에 로그인",
+                "로그인하기",
+                "xにログイン",
+                "ログインしてください",
+                "가입하기",
+                "アカウントを作成",
+            ),
+        ),
+        "temporary_restriction_text": text_contains_any(
+            body_text,
+            (
+                "로그인이 일시적으로 제한",
+                "temporarily restricted",
+                "temporarily limited",
+                "try again later",
+                "しばらくしてから",
+            ),
+        ),
+        "rate_limit_text": text_contains_any(
+            body_text,
+            (
+                "rate limit",
+                "too many requests",
+                "too many attempts",
+                "please wait",
+            ),
+        ),
+        "captcha_or_automation_text": text_contains_any(
+            body_text,
+            (
+                "captcha",
+                "unusual activity",
+                "automated",
+                "verify you are human",
+                "認証",
+            ),
+        ),
+        "search_empty_text": text_contains_any(
+            body_text,
+            (
+                "no results",
+                "try searching for something else",
+                "検索結果はありません",
+                "結果はありません",
+                "조건과 일치하는 결과가 없습니다",
+            ),
+        ),
+    }
+
+
+def observe_page_signals(page, page_kind: str) -> PageSignals:
+    markers = page_text_markers(page)
+    return PageSignals(
+        page_kind=page_kind,
+        url=page.url,
+        article_count=locator_count(page, 'article[data-testid="tweet"]'),
+        status_link_count=locator_count(page, 'a[href*="/status/"]'),
+        password_input_count=locator_count(page, 'input[type="password"], input[name="password"]'),
+        account_input_count=locator_count(page, 'input[name="text"], input[autocomplete="username"]'),
+        **markers,
+    )
+
+
+def signals_to_diagnostic(
+    diagnostic_id: str,
+    signals: PageSignals,
+    status: str,
+    tz: tzinfo,
+    window: DateWindow | None = None,
+    note: str = "",
+) -> dict[str, object]:
+    diagnostic = {
+        "id": diagnostic_id,
+        "generated_at": datetime.now(tz).isoformat(),
+        "page_kind": signals.page_kind,
+        "status": status,
+        "window_start": "" if window is None else window.start.isoformat(),
+        "window_end": "" if window is None else window.end_exclusive.isoformat(),
+        "note": note,
+        "signals": {
+            "article_count": signals.article_count,
+            "status_link_count": signals.status_link_count,
+            "password_input_count": signals.password_input_count,
+            "account_input_count": signals.account_input_count,
+            "login_prompt_text": signals.login_prompt_text,
+            "temporary_restriction_text": signals.temporary_restriction_text,
+            "rate_limit_text": signals.rate_limit_text,
+            "captcha_or_automation_text": signals.captcha_or_automation_text,
+            "search_empty_text": signals.search_empty_text,
+        },
+        "not_saved": [
+            "cookies",
+            "localStorage",
+            "sessionStorage",
+            "credentials",
+            "tokens",
+            "raw_html",
+            "screenshots",
+        ],
+    }
+    diagnostic.update(safe_url_summary(signals.url))
+    return diagnostic
+
+
+def write_diagnostics(path: Path, diagnostics: list[dict[str, object]]) -> None:
+    if diagnostics:
+        path.write_text(json.dumps({"diagnostics": diagnostics}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def prepare_login(args: argparse.Namespace, tz: tzinfo) -> dict[str, object]:
     args.profile_dir.mkdir(parents=True, exist_ok=True)
     browsers = installed_browser_candidates(args.login_browser)
@@ -384,6 +572,7 @@ def collect_from_x(args: argparse.Namespace, queries: list[str], windows: list[D
     collect_date = datetime.now(tz).date().isoformat()
     rows: list[dict[str, str]] = []
     window_log: list[dict[str, object]] = []
+    diagnostics: list[dict[str, object]] = []
     with sync_playwright() as p:
         launch_kwargs = {
             "user_data_dir": str(args.profile_dir),
@@ -396,11 +585,20 @@ def collect_from_x(args: argparse.Namespace, queries: list[str], windows: list[D
         page = context.new_page()
         try:
             page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=45_000)
-            if "login" in page.url.lower():
+            home_signals = observe_page_signals(page, "home")
+            home_status = classify_page_state(home_signals)
+            if args.debug_snapshot and home_status != "ok":
+                diagnostics.append(
+                    signals_to_diagnostic("home-1", home_signals, home_status, tz, note="home preflight")
+                )
+                write_diagnostics(args.output_dir / "diagnostics.json", diagnostics)
+                args.diagnostics_written = True
+            if home_status != "ok":
                 raise RuntimeError(
-                    "X.com login is required. Stop collection, run --prepare-login with the same "
-                    "--login-browser value in an installed Chrome/Edge profile, log in manually there, "
-                    "close that browser, then retry."
+                    f"X.com home preflight status={home_status}. Stop collection, run --prepare-login with the same "
+                    "--login-browser value in the collector stable profile, log in manually there, "
+                    "close that browser, then retry. Do not create a new profile or retry today if temporary "
+                    "restriction text is visible."
                 )
             for query in queries:
                 for window in windows:
@@ -409,12 +607,26 @@ def collect_from_x(args: argparse.Namespace, queries: list[str], windows: list[D
                     search_url = f"https://x.com/search?q={quote_plus(search_query)}&src=typed_query&f=live"
                     status = "ok"
                     error = ""
+                    diagnostic_id = ""
                     try:
                         page.goto(search_url, wait_until="domcontentloaded", timeout=45_000)
-                        page.wait_for_selector('article[data-testid="tweet"]', timeout=15_000)
-                        rows.extend(scrape_search_page(page, query, window, collect_date, args))
+                        try:
+                            page.wait_for_selector('article[data-testid="tweet"]', timeout=15_000)
+                        except PlaywrightTimeoutError:
+                            pass
+                        search_signals = observe_page_signals(page, "search")
+                        status = classify_page_state(search_signals)
+                        if status == "ok":
+                            rows.extend(scrape_search_page(page, query, window, collect_date, args))
+                            if len(rows) == before and search_signals.article_count > 0 and search_signals.status_link_count == 0:
+                                status = "selector-no-status-links"
+                        if args.debug_snapshot and (status != "ok" or len(rows) == before):
+                            diagnostic_id = f"search-{len(diagnostics) + 1}"
+                            diagnostics.append(
+                                signals_to_diagnostic(diagnostic_id, search_signals, status, tz, window=window)
+                            )
                     except PlaywrightTimeoutError:
-                        status = "no-visible-results"
+                        status = "selector-no-articles"
                     except Exception as exc:  # pragma: no cover - live path only
                         status = "error"
                         error = str(exc)
@@ -426,12 +638,16 @@ def collect_from_x(args: argparse.Namespace, queries: list[str], windows: list[D
                             "rows_added": len(rows) - before,
                             "status": status,
                             "error": error,
+                            "diagnostic_id": diagnostic_id,
                         }
                     )
                     if args.page_delay > 0:
                         page.wait_for_timeout(int(args.page_delay * 1000))
         finally:
             context.close()
+    if args.debug_snapshot and diagnostics:
+        write_diagnostics(args.output_dir / "diagnostics.json", diagnostics)
+        args.diagnostics_written = True
     return rows, window_log
 
 
@@ -555,10 +771,19 @@ def build_manifest(
         "distinct_urls": len(observed_rows),
         "duplicate_url_rows": duplicate_rows,
         "date_conflict_url_count": date_conflicts,
-        "output_files": ["raw.csv", "observed_posts.csv", "manifest.json", "gap_check.md"],
+        "output_files": [
+            "raw.csv",
+            "observed_posts.csv",
+            "manifest.json",
+            "gap_check.md",
+            "window_log.csv",
+        ]
+        + (["diagnostics.json"] if getattr(args, "diagnostics_written", False) else []),
         "live_x_smoke": mode == "live",
         "headless": bool(args.headless),
         "profile_dir_used": "" if mode != "live" else str(args.profile_dir),
+        "debug_snapshot": bool(getattr(args, "debug_snapshot", False)),
+        "diagnostics_file": "diagnostics.json" if getattr(args, "diagnostics_written", False) else "",
         "browser_requested": "" if mode != "live" else args.login_browser,
         "browser_used": "" if mode != "live" else getattr(args, "collection_browser_label", ""),
         "browser_channel": "" if mode != "live" else getattr(args, "collection_browser_channel", ""),
@@ -614,7 +839,7 @@ def write_gap_check(path: Path, start: date, end: date, queries: list[str], wind
 
 
 def write_window_log(path: Path, window_log: list[dict[str, object]]) -> None:
-    columns = ["query", "window_start", "window_end", "rows_added", "status", "error"]
+    columns = ["query", "window_start", "window_end", "rows_added", "status", "error", "diagnostic_id"]
     with path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()

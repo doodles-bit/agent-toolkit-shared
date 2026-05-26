@@ -146,7 +146,7 @@ python -m unittest tests.test_x_observed_search_collect
 
 성공 기준:
 
-- `Ran 2 tests`와 `OK`가 나온다.
+- `Ran ... tests`와 `OK`가 나온다.
 
 실패하면 볼 것:
 
@@ -173,13 +173,43 @@ python scripts\x_observed_search_collect.py `
 
 - JSON이 `"mode": "live"`로 종료한다.
 - `manifest.json`과 `window_log.csv`가 생성된다.
-- `window_log.csv` status가 `ok` 또는 `no-visible-results`로 기록된다.
+- `window_log.csv` status가 `ok`, `search-empty-state`, `selector-no-articles`, `selector-no-status-links` 중 하나로 기록된다.
 
 실패하면 볼 것:
 
-- login URL로 돌아가거나 `X.com login is required`가 나오면 수집을 멈추고 3단계의 일반 Chrome/Edge profile 상태와 같은 `--login-browser` 값을 썼는지 확인한다. 제한 메시지가 떴다면 오늘은 반복하지 않는다.
-- `no-visible-results`는 실패가 아닐 수 있다. 비로그인 surface 제한, 검색 surface 비결정성, 실제 저건수, selector 변화 가능성을 구분해야 한다.
-- selector timeout이 반복되고 수동 화면에는 결과가 보이면 selector 변경 가능성을 코드 이슈로 기록한다.
+- `login-required`가 나오면 수집을 멈추고 3단계의 일반 Chrome/Edge profile 상태와 같은 `--login-browser` 값을 썼는지 확인한다. 제한 메시지가 떴다면 오늘은 반복하지 않는다.
+- `rate-limited-or-temporary-restricted`가 나오면 즉시 중단한다. 새 profile 생성, headless 전환, 자동화 브라우저 로그인, 같은 날 반복 재시도를 하지 않는다.
+- `search-empty-state`는 X 검색 화면이 빈 결과를 명시한 상태다. 전체 트윗 0건으로 쓰지 말고 현재 검색 surface 기준 0건으로만 기록한다.
+- `selector-no-articles` 또는 `selector-no-status-links`가 반복되고 수동 화면에는 결과가 보이면 selector 변경 가능성을 코드 이슈로 기록한다.
+
+### 7a. live 0건 진단
+
+0건이면 먼저 profile 혼동을 분리한다. 평소 쓰는 default Chrome에 로그인되어 있어도 collector가 쓰는 profile과 다를 수 있다. collector profile은 `manifest.json`의 `profile_dir_used`이며, `--prepare-login`이 여는 `--user-data-dir` profile이다. default Chrome 창에서 로그인한 사실만으로는 이 수집 profile이 로그인된 것이 아니다.
+
+확인 순서:
+
+- `manifest.json`의 `browser_used`, `browser_channel`, `browser_fallback_to_bundled_chromium`, `profile_dir_used`를 본다.
+- 로그인 준비 때 사용한 `--login-browser`와 live smoke의 `--login-browser`가 같은지 확인한다.
+- `profile_dir_used`가 로그인 준비한 profile과 다르면 새 profile을 만들지 말고 같은 `--profile-dir`로 `--prepare-login`을 다시 설계한다.
+- `window_log.csv` status를 본다: `login-required`, `rate-limited-or-temporary-restricted`, `search-empty-state`, `selector-no-articles`, `selector-no-status-links`.
+- `rate-limited-or-temporary-restricted` 또는 `로그인이 일시적으로 제한되었습니다. 나중에 다시 시도해 주세요.`가 보이면 그날 추가 live 재시도는 하지 않는다.
+
+다음 live 재시도가 허용된 날에만 같은 작은 범위에 `--debug-snapshot`을 붙인다.
+
+```powershell
+python scripts\x_observed_search_collect.py `
+  --queries "韓国旅行" `
+  --recent-days 1 `
+  --timezone Asia/Tokyo `
+  --login-browser auto `
+  --output-dir reports\operations\login-profile-smoke-debug `
+  --max-posts-per-query-window 1 `
+  --max-no-new 1 `
+  --page-delay 3 `
+  --debug-snapshot
+```
+
+`diagnostics.json`에는 URL host/path/query key, selector count, login/restriction/empty-state boolean signal만 저장된다. cookie, localStorage, sessionStorage, credential, token, raw HTML, screenshot은 저장하지 않는다.
 
 ### 8. 날짜 조건 live smoke
 
@@ -206,7 +236,7 @@ python scripts\x_observed_search_collect.py `
 
 실패하면 볼 것:
 
-- 모든 query가 `no-visible-results`이면 `gap_check.md`의 0건 날짜와 `window_log.csv`를 함께 보고한다. 전체 트윗 0건으로 쓰지 않는다.
+- 모든 query가 0건이면 `gap_check.md`의 0건 날짜와 `window_log.csv` status를 함께 보고한다. 전체 트윗 0건으로 쓰지 않는다.
 - X 접근 제한, captcha, login 요구가 보이면 credentials 입력 없이 중단한다.
 - 대량 수집, cookie export, 자동 로그인, headless 강제 전환은 하지 않는다.
 
@@ -461,6 +491,7 @@ DATABASE_URL=
 | `--headless` | no | login 완료 후에만 사용 |
 | `--dry-run` | no | X.com 접속 없이 빈 산출물과 manifest 생성 |
 | `--fixture-csv` | no | fixture CSV에서 산출물 생성 |
+| `--debug-snapshot` | no | live 0건/실패 진단용 `diagnostics.json` 저장. URL 값·cookie·storage·HTML·screenshot은 저장하지 않음 |
 | `--prepare-login` / `--open-login-profile` | no | 설치된 Chrome/Edge로 X.com home을 열고 수집 없이 즉시 종료 |
 | `--login-browser` | no | prepare-login과 live 수집에 같이 적용. `auto`, `chrome`, `edge` 중 선택. default `auto`; live `auto`는 Chrome, Edge, bundled Chromium fallback 순서 |
 
@@ -470,6 +501,8 @@ DATABASE_URL=
 - 첫 인증 준비는 `--prepare-login`으로 설치된 일반 Chrome/Edge 창에서 수행하고, live 수집은 같은 `--login-browser` 선택을 적용한다.
 - `--login-browser auto`는 설치 Chrome, 설치 Edge, bundled Chromium fallback 순서다. `chrome` 또는 `edge` 명시 시 해당 설치 브라우저가 없으면 X.com 접속 전 실패한다.
 - `https://x.com/home`에 접근했을 때 login 요구가 보이면 수집을 중단하고 일반 브라우저 profile 상태와 `--login-browser` 값을 다시 확인한다.
+- live 0건/실패 status는 `login-required`, `rate-limited-or-temporary-restricted`, `search-empty-state`, `selector-no-articles`, `selector-no-status-links`로 최대한 분리한다.
+- `--debug-snapshot`은 안전한 signal JSON만 남긴다. cookie/localStorage/sessionStorage/credential/token/raw HTML/screenshot은 저장하지 않는다.
 - 검색 URL은 `https://x.com/search?q=<query since:YYYY-MM-DD until:YYYY-MM-DD>&src=typed_query&f=live` 형태를 사용한다.
 - `tweet_url`을 반드시 저장한다.
 - 같은 run 안에서는 `tweet_url` 기준 중복을 제거한다.
@@ -520,7 +553,7 @@ pass 기준:
 - X login 페이지로 되돌아가지 않음.
 - 0건이어도 `window_log.csv`에 검색 window와 query가 기록됨.
 
-0건은 실패가 아닐 수 있다. 하지만 검색 화면에서 수동으로 결과가 보이는데 raw가 0이면 selector, scroll, query encoding, 로그인 상태를 확인한다.
+0건은 실패가 아닐 수 있다. 하지만 검색 화면에서 수동으로 결과가 보이는데 raw가 0이면 `window_log.csv` status와 필요 시 `--debug-snapshot`의 `diagnostics.json`으로 selector, query encoding, 로그인 profile 상태를 확인한다.
 
 ### 8. 실제 수집으로 넘어가기
 
