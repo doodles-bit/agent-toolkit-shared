@@ -38,7 +38,7 @@ python scripts\x_observed_search_collect.py --help
 
 성공 기준:
 
-- help에 `--prepare-login`, `--login-browser`, `--max-posts-per-query-window`, `--fixture-csv`, `--dry-run`이 보인다.
+- help에 `--open-cdp-browser`, `--collection-mode`, `--debug-snapshot`, `--login-browser`, `--max-posts-per-query-window`, `--fixture-csv`, `--dry-run`이 보인다.
 
 실패하면 볼 것:
 
@@ -59,40 +59,41 @@ python -c "from zoneinfo import ZoneInfo; print(ZoneInfo('Asia/Tokyo'))"
 성공 기준:
 
 - `pip install -r requirements.txt`가 `playwright`와 `tzdata`를 설치한다.
-- `playwright install chromium`이 bundled Chromium fallback 설치를 완료한다. 기본 live 수집은 설치된 Chrome 또는 Edge를 우선 사용한다.
+- `playwright install chromium`이 explicit `--collection-mode playwright-launch` fallback 준비를 완료한다. 기본 live 수집은 사용자가 열어둔 Chrome/Edge에 CDP attach한다.
 - 마지막 Python 명령이 `Asia/Tokyo`를 출력한다.
 
 실패하면 볼 것:
 
 - timezone 에러가 나면 `python -m pip install tzdata`를 다시 실행한다.
-- bundled Chromium fallback 사용 시 Playwright browser missing 에러가 나면 `python -m playwright install chromium`을 다시 실행한다.
+- `--collection-mode playwright-launch` 사용 시 Playwright browser missing 에러가 나면 `python -m playwright install chromium`을 다시 실행한다.
 - 회사/집 네트워크에서 다운로드가 막히면 여기서 중단하고 우회 다운로드나 자동 로그인 시도를 하지 않는다.
 
-### 3. 일반 Chrome/Edge에서 로그인 profile 준비
+### 3. 일반 Chrome/Edge에서 collector profile 열기
 
 기본 profile은 worktree 안의 `.state`가 아니라 사용자 홈의 안정 경로다. 기본값은 `%USERPROFILE%\.agent-x-observed-search\chrome-profile`이며, 필요하면 `X_OBSERVED_PROFILE_DIR` 환경변수나 `--profile-dir`로 바꾼다. 같은 계정으로 worktree마다 새 profile을 만들지 않는다.
 
-`--login-browser`는 로그인 준비와 live 수집에 같이 적용된다. 기본 `auto`는 설치된 Chrome, 설치된 Edge, 마지막에만 Playwright bundled Chromium fallback 순서다. `--login-browser chrome` 또는 `--login-browser edge`를 명시하면 해당 설치 브라우저가 없을 때 X.com에 접속하기 전에 실패한다.
+기본 live 수집은 Playwright가 Chrome을 launch하지 않는다. 사용자가 눈으로 확인한 설치 Chrome/Edge stable profile을 `--open-cdp-browser`로 먼저 열고, 수집기는 `--collection-mode cdp`로 그 브라우저에 붙는다. `channel=chrome`으로 Playwright가 launch한 브라우저는 일반 Chrome 세션이 아니라 `installed Chrome binary under Playwright automation`이다.
 
 ```powershell
 python scripts\x_observed_search_collect.py `
-  --prepare-login `
-  --login-browser auto
+  --open-cdp-browser `
+  --login-browser auto `
+  --remote-debugging-port 9222
 ```
 
 성공 기준:
 
 - 설치된 일반 Chrome 또는 Edge 창이 visible 모드로 열린다.
 - 사용자가 직접 X.com에 로그인한다.
-- 터미널 JSON에 `"mode": "prepare-login"`, `"automation_browser": false`, `"collection_started": false`, `"cookie_exported": false`, `"browser_path"`가 나온다.
-- 로그인 후 브라우저를 직접 닫고 다음 smoke로 넘어간다. live 수집도 같은 `--login-browser` 선택과 profile을 쓰므로, profile이 열려 있으면 Playwright 수집이 같은 profile을 잡지 못할 수 있다.
+- 터미널 JSON에 `"mode": "open-cdp-browser"`, `"automation_browser": false`, `"collection_started": false`, `"cookie_exported": false`, `"browser_path"`, `"remote_debugging_port"`가 나온다.
+- 로그인 상태를 눈으로 확인한 뒤 브라우저를 열어둔 채 다음 smoke로 넘어간다. 닫으면 CDP attach 수집이 붙을 대상이 사라진다.
 
 실패하면 볼 것:
 
 - `로그인이 일시적으로 제한되었습니다. 나중에 다시 시도해 주세요.`가 뜨면 즉시 중단한다. 새 profile 반복 생성, Playwright/자동화 브라우저 로그인, 즉시 재시도는 하지 않는다. 같은 날 추가 로그인 시도는 제한을 악화시킬 수 있으므로 충분히 기다린 뒤 일반 브라우저에서만 다시 확인한다.
 - login URL이나 signup flow로 돌아가면 세션이 준비되지 않은 상태다. 계정/비밀번호를 스크립트에 넣지 않는다.
 - `No installed Chrome/Edge browser found`가 나오면 Chrome 또는 Edge 설치 상태를 확인하거나 `--login-browser chrome`/`--login-browser edge`를 명시한다.
-- `--prepare-login`은 `--headless`, `--dry-run`, `--fixture-csv`와 함께 쓰지 않는다.
+- `--open-cdp-browser`는 `--headless`, `--dry-run`, `--fixture-csv`, `--debug-snapshot`과 함께 쓰지 않는다.
 
 ### 4. fixture smoke
 
@@ -163,6 +164,8 @@ python scripts\x_observed_search_collect.py `
   --recent-days 1 `
   --timezone Asia/Tokyo `
   --login-browser auto `
+  --collection-mode cdp `
+  --remote-debugging-port 9222 `
   --output-dir reports\operations\login-profile-smoke `
   --max-posts-per-query-window 1 `
   --max-no-new 1 `
@@ -177,20 +180,20 @@ python scripts\x_observed_search_collect.py `
 
 실패하면 볼 것:
 
-- `login-required`가 나오면 수집을 멈추고 3단계의 일반 Chrome/Edge profile 상태와 같은 `--login-browser` 값을 썼는지 확인한다. 제한 메시지가 떴다면 오늘은 반복하지 않는다.
+- `login-required`가 나오면 수집을 멈추고 3단계의 CDP browser가 아직 열려 있는지, 같은 `--profile-dir`/`--remote-debugging-port`를 쓰는지 확인한다. 제한 메시지가 떴다면 오늘은 반복하지 않는다.
 - `rate-limited-or-temporary-restricted`가 나오면 즉시 중단한다. 새 profile 생성, headless 전환, 자동화 브라우저 로그인, 같은 날 반복 재시도를 하지 않는다.
 - `search-empty-state`는 X 검색 화면이 빈 결과를 명시한 상태다. 전체 트윗 0건으로 쓰지 말고 현재 검색 surface 기준 0건으로만 기록한다.
 - `selector-no-articles` 또는 `selector-no-status-links`가 반복되고 수동 화면에는 결과가 보이면 selector 변경 가능성을 코드 이슈로 기록한다.
 
 ### 7a. live 0건 진단
 
-0건이면 먼저 profile 혼동을 분리한다. 평소 쓰는 default Chrome에 로그인되어 있어도 collector가 쓰는 profile과 다를 수 있다. collector profile은 `manifest.json`의 `profile_dir_used`이며, `--prepare-login`이 여는 `--user-data-dir` profile이다. default Chrome 창에서 로그인한 사실만으로는 이 수집 profile이 로그인된 것이 아니다.
+0건이면 먼저 profile 혼동을 분리한다. 평소 쓰는 default Chrome에 로그인되어 있어도 collector가 쓰는 profile과 다를 수 있다. collector profile은 `manifest.json`의 `profile_dir_used`이며, `--open-cdp-browser`가 여는 `--user-data-dir` profile이다. default Chrome 창에서 로그인한 사실만으로는 이 수집 profile이 로그인된 것이 아니다.
 
 확인 순서:
 
-- `manifest.json`의 `browser_used`, `browser_channel`, `browser_fallback_to_bundled_chromium`, `profile_dir_used`를 본다.
-- 로그인 준비 때 사용한 `--login-browser`와 live smoke의 `--login-browser`가 같은지 확인한다.
-- `profile_dir_used`가 로그인 준비한 profile과 다르면 새 profile을 만들지 말고 같은 `--profile-dir`로 `--prepare-login`을 다시 설계한다.
+- `manifest.json`의 `collection_mode`, `browser_used`, `browser_channel`, `remote_debugging_port`, `profile_dir_used`를 본다.
+- `collection_mode`가 `cdp`인지 확인한다. `playwright-launch`는 explicit fallback이며 일반 Chrome 세션으로 취급하지 않는다.
+- `profile_dir_used`가 로그인 준비한 profile과 다르면 새 profile을 만들지 말고 같은 `--profile-dir`로 `--open-cdp-browser`를 다시 설계한다.
 - `window_log.csv` status를 본다: `login-required`, `rate-limited-or-temporary-restricted`, `search-empty-state`, `selector-no-articles`, `selector-no-status-links`.
 - `rate-limited-or-temporary-restricted` 또는 `로그인이 일시적으로 제한되었습니다. 나중에 다시 시도해 주세요.`가 보이면 그날 추가 live 재시도는 하지 않는다.
 
@@ -202,6 +205,8 @@ python scripts\x_observed_search_collect.py `
   --recent-days 1 `
   --timezone Asia/Tokyo `
   --login-browser auto `
+  --collection-mode cdp `
+  --remote-debugging-port 9222 `
   --output-dir reports\operations\login-profile-smoke-debug `
   --max-posts-per-query-window 1 `
   --max-no-new 1 `
@@ -222,6 +227,8 @@ python scripts\x_observed_search_collect.py `
   --end-date 2026-05-25 `
   --timezone Asia/Tokyo `
   --login-browser auto `
+  --collection-mode cdp `
+  --remote-debugging-port 9222 `
   --output-dir reports\operations\jp-tourism-smoke-2026-05-25 `
   --max-posts-per-query-window 5 `
   --max-no-new 3 `
@@ -368,7 +375,7 @@ python scripts\x_observed_search_collect.py `
 
 ### Live X.com observed-search smoke
 
-아래는 일반 Chrome/Edge에서 로그인 세션이 준비된 개인 환경에서만 소규모로 실행한다. 계정 ID/PW, cookie, browser profile은 repo에 커밋하지 않는다.
+아래는 `--open-cdp-browser`로 열린 collector stable profile에서 로그인 상태를 눈으로 확인한 개인 환경에서만 소규모로 실행한다. 계정 ID/PW, cookie, browser profile은 repo에 커밋하지 않는다.
 
 ```powershell
 python -m pip install -r requirements.txt
@@ -380,13 +387,15 @@ python scripts\x_observed_search_collect.py `
   --end-date 2026-05-25 `
   --timezone Asia/Tokyo `
   --login-browser auto `
+  --collection-mode cdp `
+  --remote-debugging-port 9222 `
   --output-dir reports\operations\jp-tourism-smoke `
   --max-posts-per-query-window 5 `
   --max-no-new 3 `
   --page-delay 3
 ```
 
-수집 명령에서 로그인하지 않는다. `--prepare-login`으로 일반 Chrome/Edge profile을 먼저 준비하고, 브라우저를 닫은 뒤 같은 기본 profile과 같은 `--login-browser` 선택을 재사용한다. 기본 `auto`는 Chrome, Edge, bundled Chromium fallback 순서이며 Chromium은 설치 Chrome/Edge가 없을 때만 마지막 fallback이다. X 접근 제한이나 약관 우회는 하지 않는다.
+수집 명령에서 로그인하지 않는다. `--open-cdp-browser`로 일반 Chrome/Edge profile을 먼저 열고, 브라우저를 열어둔 채 `--collection-mode cdp`로 붙는다. `--collection-mode playwright-launch`는 명시 fallback이며, `channel=chrome`이어도 일반 Chrome 세션이 아니라 installed Chrome binary under Playwright automation이다. X 접근 제한이나 약관 우회는 하지 않는다.
 
 ## 0부터 설치하기
 
@@ -433,7 +442,7 @@ python -m pip install playwright python-dotenv pandas
 python -m playwright install chromium
 ```
 
-기본 live 수집은 설치된 Chrome 또는 Edge channel을 먼저 쓰므로 `python -m playwright install chromium`은 마지막 fallback 준비용이다. 처음 구성에서는 설치해 두는 편이 단순하지만, Chrome/Edge profile을 Chromium으로 여는 것이 기본 동작은 아니다.
+기본 live 수집은 사용자가 열어둔 Chrome/Edge에 CDP로 attach하므로 `python -m playwright install chromium`은 `--collection-mode playwright-launch` fallback 준비용이다. 처음 구성에서는 설치해 두는 편이 단순하지만, Playwright가 launch한 Chrome/Chromium을 일반 Chrome 세션으로 취급하지 않는다.
 
 ### 3. `.gitignore` 만들기
 
@@ -481,26 +490,29 @@ DATABASE_URL=
 | `--start-date` 또는 `--recent-days` | yes | inclusive start date 또는 최근 N일 |
 | `--end-date` | `--start-date` 사용 시 yes | inclusive end date |
 | `--timezone` | no | default `Asia/Tokyo` |
-| `--output-dir` | yes | 실행 산출물 폴더. `--prepare-login`에서는 불필요 |
+| `--output-dir` | yes | 실행 산출물 폴더. `--prepare-login`/`--open-cdp-browser`에서는 불필요 |
 | `--window-days` | no | default `1` |
 | `--max-posts-per-query-window` | no | default `100` |
 | `--max-no-new` | no | default `10` |
 | `--scroll-delay` | no | default `2` seconds |
 | `--page-delay` | no | default `2` seconds |
+| `--collection-mode` | no | live 수집 연결 방식. default `cdp`; `playwright-launch`는 명시 fallback |
+| `--remote-debugging-port` | no | default `9222`; `--open-cdp-browser`와 `--collection-mode cdp`가 같이 쓰는 CDP port |
 | `--profile-dir` | no | default `X_OBSERVED_PROFILE_DIR` 또는 `~/.agent-x-observed-search/chrome-profile` |
-| `--headless` | no | login 완료 후에만 사용 |
+| `--headless` | no | `--collection-mode playwright-launch`에서만 사용 |
 | `--dry-run` | no | X.com 접속 없이 빈 산출물과 manifest 생성 |
 | `--fixture-csv` | no | fixture CSV에서 산출물 생성 |
 | `--debug-snapshot` | no | live 0건/실패 진단용 `diagnostics.json` 저장. URL 값·cookie·storage·HTML·screenshot은 저장하지 않음 |
 | `--prepare-login` / `--open-login-profile` | no | 설치된 Chrome/Edge로 X.com home을 열고 수집 없이 즉시 종료 |
-| `--login-browser` | no | prepare-login과 live 수집에 같이 적용. `auto`, `chrome`, `edge` 중 선택. default `auto`; live `auto`는 Chrome, Edge, bundled Chromium fallback 순서 |
+| `--open-cdp-browser` | no | 설치된 Chrome/Edge를 `--user-data-dir` + `--remote-debugging-port`로 열고 수집 없이 종료 |
+| `--login-browser` | no | `--prepare-login`, `--open-cdp-browser`, `--collection-mode playwright-launch`에서 브라우저 선택. `auto`, `chrome`, `edge` 중 선택 |
 
 가장 중요한 구현 요구사항:
 
-- 수집 단계는 Playwright persistent browser profile을 사용하지만, 로그인 자체는 수집기 안에서 하지 않는다.
-- 첫 인증 준비는 `--prepare-login`으로 설치된 일반 Chrome/Edge 창에서 수행하고, live 수집은 같은 `--login-browser` 선택을 적용한다.
-- `--login-browser auto`는 설치 Chrome, 설치 Edge, bundled Chromium fallback 순서다. `chrome` 또는 `edge` 명시 시 해당 설치 브라우저가 없으면 X.com 접속 전 실패한다.
-- `https://x.com/home`에 접근했을 때 login 요구가 보이면 수집을 중단하고 일반 브라우저 profile 상태와 `--login-browser` 값을 다시 확인한다.
+- 기본 수집 단계는 Playwright가 브라우저를 launch하지 않고, `--open-cdp-browser`로 사용자가 열어둔 Chrome/Edge에 CDP attach한다.
+- 첫 인증 준비는 `--open-cdp-browser`로 설치된 일반 Chrome/Edge 창에서 수행하고, live 수집은 같은 `--profile-dir`과 `--remote-debugging-port`로 붙는다.
+- `--collection-mode playwright-launch`는 explicit fallback이다. 이때 `channel=chrome`은 일반 Chrome이 아니라 installed Chrome binary under Playwright automation으로 기록한다.
+- `https://x.com/home`에 접근했을 때 login 요구가 보이면 수집을 중단하고 CDP browser가 아직 열려 있는지, 같은 profile/port를 쓰는지 확인한다.
 - live 0건/실패 status는 `login-required`, `rate-limited-or-temporary-restricted`, `search-empty-state`, `selector-no-articles`, `selector-no-status-links`로 최대한 분리한다.
 - `--debug-snapshot`은 안전한 signal JSON만 남긴다. cookie/localStorage/sessionStorage/credential/token/raw HTML/screenshot은 저장하지 않는다.
 - 검색 URL은 `https://x.com/search?q=<query since:YYYY-MM-DD until:YYYY-MM-DD>&src=typed_query&f=live` 형태를 사용한다.
@@ -508,18 +520,19 @@ DATABASE_URL=
 - 같은 run 안에서는 `tweet_url` 기준 중복을 제거한다.
 - `raw.csv`, `observed_posts.csv`, `window_log.csv`, `manifest.json`, `gap_check.md`를 저장한다.
 
-### 6. X.com 로그인 세션 만들기
+### 6. X.com CDP 세션 만들기
 
-첫 실행은 인증 준비 단계다. 이 단계에서는 수집을 시작하지 않고, 사용자 홈의 안정 profile에 사용자가 직접 로그인한 브라우저 세션을 남기는 것이 목적이다.
+첫 실행은 인증 준비 단계다. 이 단계에서는 수집을 시작하지 않고, 사용자 홈의 안정 profile을 일반 Chrome/Edge로 열어 사용자가 로그인 상태를 직접 확인하는 것이 목적이다. 이 브라우저를 열어둔 채 다음 smoke run을 실행한다.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
 python scripts\x_observed_search_collect.py `
-  --prepare-login `
-  --login-browser auto
+  --open-cdp-browser `
+  --login-browser auto `
+  --remote-debugging-port 9222
 ```
 
-브라우저가 열리면 X.com에 직접 로그인한다. 2FA가 있으면 직접 처리한다. 스크립트는 계정/비밀번호를 받지 않고, cookie를 export하지 않으며, 검색 수집도 시작하지 않는다. 로그인 후 브라우저를 닫고 첫 smoke run을 실행한다. Edge를 명시해 준비했다면 수집에도 `--login-browser edge`를 붙인다.
+브라우저가 열리면 X.com에 직접 로그인한다. 2FA가 있으면 직접 처리한다. 스크립트는 계정/비밀번호를 받지 않고, cookie를 export하지 않으며, 검색 수집도 시작하지 않는다. 로그인 후 브라우저를 닫지 말고 첫 smoke run을 실행한다.
 
 주의:
 
@@ -527,7 +540,7 @@ python scripts\x_observed_search_collect.py `
 - cookie를 export해서 repo에 넣지 않는다.
 - `%USERPROFILE%\.agent-x-observed-search\chrome-profile` 폴더는 개인 PC에만 둔다.
 - `로그인이 일시적으로 제한되었습니다. 나중에 다시 시도해 주세요.`가 뜨면 즉시 중단하고, 새 profile 생성이나 자동화 브라우저 로그인 재시도를 하지 않는다.
-- 로그인 세션이 만료되면 같은 `--prepare-login` 방식으로 일반 Chrome/Edge에서만 재로그인한다.
+- 로그인 세션이 만료되면 같은 `--open-cdp-browser` 방식으로 일반 Chrome/Edge에서만 재로그인한다.
 
 ### 7. 첫 smoke run
 
@@ -540,6 +553,8 @@ python scripts\x_observed_search_collect.py `
   --queries "#Topic,Topic Name" `
   --timezone Asia/Tokyo `
   --login-browser auto `
+  --collection-mode cdp `
+  --remote-debugging-port 9222 `
   --output-dir reports\operations\topic-smoke-2026-01-01 `
   --window-days 1 `
   --max-posts-per-query-window 10 `
@@ -566,13 +581,15 @@ python scripts\x_observed_search_collect.py `
   --queries "#Topic,Topic Name,TopicName" `
   --timezone Asia/Tokyo `
   --login-browser auto `
+  --collection-mode cdp `
+  --remote-debugging-port 9222 `
   --output-dir reports\operations\topic-observed-2026-01 `
   --window-days 1 `
   --max-posts-per-query-window 100 `
   --max-no-new 10
 ```
 
-처음부터 `--headless`를 쓰지 않는다. 며칠 운용해서 로그인 세션이 안정적인 것을 확인한 뒤에만 headless를 켠다.
+기본 `cdp` 모드에서는 `--headless`를 쓰지 않는다. `--headless`는 `--collection-mode playwright-launch`를 명시한 fallback에서만 허용되며, 그 경우에도 X가 일반 브라우저와 다르게 취급할 수 있다.
 
 ## 권장 데이터 스키마
 
@@ -638,7 +655,7 @@ expanded: "Hi Fi Rush", "hifi rush", "Tango Hi-Fi Rush", "KRAFTON Hi-Fi Rush"
 ## 권장 실행 절차
 
 아래 절차는 위의 `0부터 설치하기`와 첫 smoke run이 끝난 뒤의 운영 단계다.
-아직 X 로그인 세션이 없으면 이 단계로 바로 넘어가지 말고 먼저 `--prepare-login`으로 사용자 홈의 안정 profile에 로그인 세션을 만든다.
+아직 X 로그인 세션이 없거나 CDP browser가 열려 있지 않으면 이 단계로 바로 넘어가지 말고 먼저 `--open-cdp-browser`로 사용자 홈의 안정 profile을 열고 로그인 상태를 확인한다.
 
 ### 1. raw 먼저 만들기
 
@@ -654,6 +671,8 @@ python scripts\x_observed_search_collect.py `
   --queries "#Topic,Topic Name,TopicName" `
   --timezone Asia/Tokyo `
   --login-browser auto `
+  --collection-mode cdp `
+  --remote-debugging-port 9222 `
   --output-dir reports\operations\x-topic-raw-2026-01
 ```
 
@@ -798,7 +817,7 @@ X full archive API 기반 전체 언급량이 아니므로, 날짜별 비교는 
 
 - [ ] 검색어 core/expanded 세트 정의.
 - [ ] 날짜 범위와 timezone 기준 명시.
-- [ ] `--prepare-login`으로 일반 Chrome/Edge stable profile 로그인 준비.
+- [ ] `--open-cdp-browser`로 일반 Chrome/Edge stable profile을 열고 로그인 상태 확인.
 - [ ] 1일 window raw 수집 실행.
 - [ ] raw union 및 `tweet_url` dedupe.
 - [ ] 날짜별 0건/저건수 재검색.
@@ -828,7 +847,11 @@ X full archive API 기반 전체 언급량이 아니므로, 날짜별 비교는 
 
 ### 집 환경에서 로그인 창이 뜸
 
-수집기 안에서 로그인하지 않는다. `--prepare-login`으로 설치된 일반 Chrome/Edge를 열고 직접 로그인한 뒤, 브라우저를 닫고 수집 명령을 다시 실행한다. `로그인이 일시적으로 제한되었습니다. 나중에 다시 시도해 주세요.`가 뜨면 새 profile 생성이나 반복 로그인 시도를 멈추고 충분히 기다린다. 계정/2FA 정보는 repo나 스크립트에 저장하지 않는다.
+수집기 안에서 로그인하지 않는다. `--open-cdp-browser`로 설치된 일반 Chrome/Edge를 열고 직접 로그인한 뒤, 브라우저를 열어둔 상태에서 `--collection-mode cdp` 수집 명령을 실행한다. `로그인이 일시적으로 제한되었습니다. 나중에 다시 시도해 주세요.`가 뜨면 새 profile 생성이나 반복 로그인 시도를 멈추고 충분히 기다린다. 계정/2FA 정보는 repo나 스크립트에 저장하지 않는다.
+
+### `browser_used`가 installed Chrome binary인데 로그인 실패가 남
+
+`--collection-mode playwright-launch`에서 `channel=chrome`을 쓰면 설치된 Chrome binary를 Playwright가 자동화 모드로 launch한 것이다. 이것은 사용자가 평소 쓰는 default Chrome이나 `--open-cdp-browser`로 직접 확인한 stable profile 세션과 같지 않다. 기본 수집은 `--collection-mode cdp`와 `--open-cdp-browser` 조합으로 맞춘다.
 
 ## 최소 원칙
 

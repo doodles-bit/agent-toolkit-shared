@@ -101,12 +101,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scroll-delay", type=float, default=2.0)
     parser.add_argument("--page-delay", type=float, default=2.0, help="Delay between query-window search pages.")
     parser.add_argument(
+        "--collection-mode",
+        choices=("cdp", "playwright-launch"),
+        default="cdp",
+        help=(
+            "Live collection connection model. Default cdp attaches to a user-opened stable browser. "
+            "playwright-launch is an explicit fallback that launches a browser under Playwright automation."
+        ),
+    )
+    parser.add_argument("--remote-debugging-port", type=int, default=9222, help="CDP port for --open-cdp-browser and live --collection-mode cdp.")
+    parser.add_argument(
         "--profile-dir",
         type=Path,
         default=DEFAULT_PROFILE_DIR,
         help="Persistent local browser profile. Defaults to X_OBSERVED_PROFILE_DIR or ~/.agent-x-observed-search/chrome-profile.",
     )
-    parser.add_argument("--headless", action="store_true", help="Use only after login profile is ready.")
+    parser.add_argument("--headless", action="store_true", help="Only valid with --collection-mode playwright-launch.")
     parser.add_argument("--fixture-csv", type=Path, help="Read observed rows from a fixture CSV instead of X.com.")
     parser.add_argument("--dry-run", action="store_true", help="Create empty artifacts and manifest without X.com access.")
     parser.add_argument(
@@ -125,12 +135,20 @@ def parse_args() -> argparse.Namespace:
         help="Open X.com home in installed Chrome/Edge with the persistent profile and exit without collecting.",
     )
     parser.add_argument(
+        "--open-cdp-browser",
+        action="store_true",
+        help=(
+            "Open installed Chrome/Edge with --user-data-dir and --remote-debugging-port for later CDP attach, "
+            "then exit without collecting."
+        ),
+    )
+    parser.add_argument(
         "--login-browser",
         choices=("auto", "chrome", "edge"),
         default="auto",
         help=(
-            "Installed browser for --prepare-login and live collection. "
-            "auto uses Chrome, then Edge; live collection falls back to bundled Chromium only if neither is installed."
+            "Installed browser for --prepare-login, --open-cdp-browser, and explicit --collection-mode playwright-launch. "
+            "auto uses Chrome, then Edge."
         ),
     )
     args = parser.parse_args()
@@ -140,7 +158,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    if args.remote_debugging_port < 1 or args.remote_debugging_port > 65535:
+        parser.error("--remote-debugging-port must be between 1 and 65535.")
     if args.prepare_login:
+        if args.open_cdp_browser:
+            parser.error("--prepare-login cannot be combined with --open-cdp-browser.")
         if args.headless:
             parser.error("--prepare-login opens a visible browser; remove --headless.")
         if args.fixture_csv or args.dry_run:
@@ -148,12 +170,22 @@ def validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         if args.debug_snapshot:
             parser.error("--prepare-login cannot be combined with --debug-snapshot.")
         return
+    if args.open_cdp_browser:
+        if args.headless:
+            parser.error("--open-cdp-browser opens a visible browser; remove --headless.")
+        if args.fixture_csv or args.dry_run:
+            parser.error("--open-cdp-browser cannot be combined with --fixture-csv or --dry-run.")
+        if args.debug_snapshot:
+            parser.error("--open-cdp-browser cannot be combined with --debug-snapshot.")
+        return
+    if args.headless and not (args.dry_run or args.fixture_csv) and args.collection_mode != "playwright-launch":
+        parser.error("--headless is only supported with --collection-mode playwright-launch.")
     if not args.queries and not args.query_file:
-        parser.error("one of --queries or --query-file is required unless --prepare-login is used.")
+        parser.error("one of --queries or --query-file is required unless --prepare-login or --open-cdp-browser is used.")
     if not args.start_date and args.recent_days is None:
-        parser.error("one of --start-date or --recent-days is required unless --prepare-login is used.")
+        parser.error("one of --start-date or --recent-days is required unless --prepare-login or --open-cdp-browser is used.")
     if not args.output_dir:
-        parser.error("--output-dir is required unless --prepare-login is used.")
+        parser.error("--output-dir is required unless --prepare-login or --open-cdp-browser is used.")
 
 
 def resolve_timezone(value: str) -> tzinfo:
@@ -330,14 +362,22 @@ def installed_browser_candidates(kind: str) -> list[Path]:
 def resolve_collection_browser(kind: str) -> CollectionBrowser:
     if kind == "chrome":
         if installed_browser_candidates("chrome"):
-            return CollectionBrowser(requested=kind, channel="chrome", label="installed Chrome")
+            return CollectionBrowser(
+                requested=kind,
+                channel="chrome",
+                label="installed Chrome binary under Playwright automation",
+            )
         raise RuntimeError(
             "No installed Chrome browser found for --login-browser chrome. "
             "Install Chrome, use --login-browser edge, or use --login-browser auto for documented fallback."
         )
     if kind == "edge":
         if installed_browser_candidates("edge"):
-            return CollectionBrowser(requested=kind, channel="msedge", label="installed Edge")
+            return CollectionBrowser(
+                requested=kind,
+                channel="msedge",
+                label="installed Edge binary under Playwright automation",
+            )
         raise RuntimeError(
             "No installed Edge browser found for --login-browser edge. "
             "Install Edge, use --login-browser chrome, or use --login-browser auto for documented fallback."
@@ -345,9 +385,17 @@ def resolve_collection_browser(kind: str) -> CollectionBrowser:
     if kind != "auto":
         raise ValueError(f"unsupported --login-browser value: {kind}")
     if installed_browser_candidates("chrome"):
-        return CollectionBrowser(requested=kind, channel="chrome", label="installed Chrome")
+        return CollectionBrowser(
+            requested=kind,
+            channel="chrome",
+            label="installed Chrome binary under Playwright automation",
+        )
     if installed_browser_candidates("edge"):
-        return CollectionBrowser(requested=kind, channel="msedge", label="installed Edge")
+        return CollectionBrowser(
+            requested=kind,
+            channel="msedge",
+            label="installed Edge binary under Playwright automation",
+        )
     return CollectionBrowser(
         requested=kind,
         channel=None,
@@ -553,8 +601,75 @@ def prepare_login(args: argparse.Namespace, tz: tzinfo) -> dict[str, object]:
     }
 
 
-def collect_from_x(args: argparse.Namespace, queries: list[str], windows: list[DateWindow], tz: tzinfo) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
+def open_cdp_browser(args: argparse.Namespace, tz: tzinfo) -> dict[str, object]:
+    args.profile_dir.mkdir(parents=True, exist_ok=True)
+    browsers = installed_browser_candidates(args.login_browser)
+    if not browsers:
+        raise RuntimeError(
+            "No installed Chrome/Edge browser found. Install Chrome or Edge, or pass --login-browser chrome/edge."
+        )
+    browser_path = browsers[0]
+    command = [
+        str(browser_path),
+        f"--user-data-dir={args.profile_dir}",
+        f"--remote-debugging-port={args.remote_debugging_port}",
+        "--new-window",
+        "https://x.com/home",
+    ]
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    proc = subprocess.Popen(command, close_fds=True, creationflags=creationflags)
+    return {
+        "ok": True,
+        "mode": "open-cdp-browser",
+        "generated_at": datetime.now(tz).isoformat(),
+        "profile_dir_used": str(args.profile_dir),
+        "browser_path": str(browser_path),
+        "browser_pid": proc.pid,
+        "opened_url": "https://x.com/home",
+        "remote_debugging_port": args.remote_debugging_port,
+        "cdp_endpoint": f"http://127.0.0.1:{args.remote_debugging_port}",
+        "automation_browser": False,
+        "collection_started": False,
+        "credentials_handled_by_script": False,
+        "cookie_exported": False,
+        "next_step": "Confirm login manually in the opened browser, keep it open, then run live collection with --collection-mode cdp.",
+    }
+
+
+def open_collection_page(playwright, args: argparse.Namespace):
+    if args.collection_mode == "cdp":
+        endpoint = f"http://127.0.0.1:{args.remote_debugging_port}"
+        try:
+            browser = playwright.chromium.connect_over_cdp(endpoint)
+        except Exception as exc:
+            raise RuntimeError(
+                "CDP browser is not reachable. Run --open-cdp-browser with the same --profile-dir and "
+                f"--remote-debugging-port {args.remote_debugging_port}, confirm login in that visible browser, "
+                "keep it open, then rerun collection."
+            ) from exc
+        context = browser.contexts[0] if browser.contexts else browser.new_context()
+        page = context.pages[0] if context.pages else context.new_page()
+        return context, page, None
+
     browser = resolve_collection_browser(args.login_browser)
+    args.collection_browser_label = browser.label
+    args.collection_browser_channel = browser.channel or "chromium"
+    args.collection_browser_fallback = browser.fallback_to_bundled_chromium
+    launch_kwargs = {
+        "user_data_dir": str(args.profile_dir),
+        "headless": args.headless,
+        "viewport": {"width": 1365, "height": 900},
+    }
+    if browser.channel:
+        launch_kwargs["channel"] = browser.channel
+    context = playwright.chromium.launch_persistent_context(**launch_kwargs)
+    page = context.new_page()
+    return context, page, context.close
+
+
+def collect_from_x(args: argparse.Namespace, queries: list[str], windows: list[DateWindow], tz: tzinfo) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
     try:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
         from playwright.sync_api import sync_playwright
@@ -566,23 +681,16 @@ def collect_from_x(args: argparse.Namespace, queries: list[str], windows: list[D
         ) from exc
 
     args.profile_dir.mkdir(parents=True, exist_ok=True)
-    args.collection_browser_label = browser.label
-    args.collection_browser_channel = browser.channel or "chromium"
-    args.collection_browser_fallback = browser.fallback_to_bundled_chromium
+    if args.collection_mode == "cdp":
+        args.collection_browser_label = "CDP attached user-opened stable browser"
+        args.collection_browser_channel = "cdp"
+        args.collection_browser_fallback = False
     collect_date = datetime.now(tz).date().isoformat()
     rows: list[dict[str, str]] = []
     window_log: list[dict[str, object]] = []
     diagnostics: list[dict[str, object]] = []
     with sync_playwright() as p:
-        launch_kwargs = {
-            "user_data_dir": str(args.profile_dir),
-            "headless": args.headless,
-            "viewport": {"width": 1365, "height": 900},
-        }
-        if browser.channel:
-            launch_kwargs["channel"] = browser.channel
-        context = p.chromium.launch_persistent_context(**launch_kwargs)
-        page = context.new_page()
+        context, page, close_context = open_collection_page(p, args)
         try:
             page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=45_000)
             home_signals = observe_page_signals(page, "home")
@@ -595,10 +703,10 @@ def collect_from_x(args: argparse.Namespace, queries: list[str], windows: list[D
                 args.diagnostics_written = True
             if home_status != "ok":
                 raise RuntimeError(
-                    f"X.com home preflight status={home_status}. Stop collection, run --prepare-login with the same "
-                    "--login-browser value in the collector stable profile, log in manually there, "
-                    "close that browser, then retry. Do not create a new profile or retry today if temporary "
-                    "restriction text is visible."
+                    f"X.com home preflight status={home_status}. Stop collection, run --open-cdp-browser with the same "
+                    "--profile-dir and --remote-debugging-port, confirm login manually in that visible browser, "
+                    "keep it open, then retry with --collection-mode cdp. Do not create a new profile or retry today "
+                    "if temporary restriction text is visible."
                 )
             for query in queries:
                 for window in windows:
@@ -644,7 +752,8 @@ def collect_from_x(args: argparse.Namespace, queries: list[str], windows: list[D
                     if args.page_delay > 0:
                         page.wait_for_timeout(int(args.page_delay * 1000))
         finally:
-            context.close()
+            if close_context:
+                close_context()
     if args.debug_snapshot and diagnostics:
         write_diagnostics(args.output_dir / "diagnostics.json", diagnostics)
         args.diagnostics_written = True
@@ -781,6 +890,8 @@ def build_manifest(
         + (["diagnostics.json"] if getattr(args, "diagnostics_written", False) else []),
         "live_x_smoke": mode == "live",
         "headless": bool(args.headless),
+        "collection_mode": "" if mode != "live" else args.collection_mode,
+        "remote_debugging_port": "" if mode != "live" or args.collection_mode != "cdp" else args.remote_debugging_port,
         "profile_dir_used": "" if mode != "live" else str(args.profile_dir),
         "debug_snapshot": bool(getattr(args, "debug_snapshot", False)),
         "diagnostics_file": "diagnostics.json" if getattr(args, "diagnostics_written", False) else "",
@@ -853,6 +964,9 @@ def main() -> int:
         tz = resolve_timezone(args.timezone)
         if args.prepare_login:
             print(json.dumps(prepare_login(args, tz), ensure_ascii=False))
+            return 0
+        if args.open_cdp_browser:
+            print(json.dumps(open_cdp_browser(args, tz), ensure_ascii=False))
             return 0
         queries = load_queries(args)
         start, end = resolve_dates(args, tz)

@@ -113,8 +113,11 @@ class XObservedSearchCollectTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("--login-browser", proc.stdout)
         self.assertIn("--debug-snapshot", proc.stdout)
-        self.assertIn("Installed browser for --prepare-login and live", proc.stdout)
-        self.assertIn("collection falls back to bundled Chromium", proc.stdout)
+        self.assertIn("--collection-mode", proc.stdout)
+        self.assertIn("--open-cdp-browser", proc.stdout)
+        self.assertIn("Installed browser for --prepare-login", proc.stdout)
+        self.assertIn("--open-cdp-browser", proc.stdout)
+        self.assertIn("playwright-launch", proc.stdout)
 
     def test_collection_browser_auto_prefers_installed_chrome(self):
         module = load_collector_module()
@@ -129,7 +132,7 @@ class XObservedSearchCollectTest(unittest.TestCase):
             browser = module.resolve_collection_browser("auto")
 
         self.assertEqual(browser.channel, "chrome")
-        self.assertEqual(browser.label, "installed Chrome")
+        self.assertEqual(browser.label, "installed Chrome binary under Playwright automation")
         self.assertFalse(browser.fallback_to_bundled_chromium)
 
     def test_collection_browser_auto_uses_edge_before_chromium_fallback(self):
@@ -145,7 +148,7 @@ class XObservedSearchCollectTest(unittest.TestCase):
             browser = module.resolve_collection_browser("auto")
 
         self.assertEqual(browser.channel, "msedge")
-        self.assertEqual(browser.label, "installed Edge")
+        self.assertEqual(browser.label, "installed Edge binary under Playwright automation")
         self.assertFalse(browser.fallback_to_bundled_chromium)
 
     def test_collection_browser_auto_limits_chromium_to_last_fallback(self):
@@ -164,6 +167,48 @@ class XObservedSearchCollectTest(unittest.TestCase):
         with patch.object(module, "installed_browser_candidates", return_value=[]):
             with self.assertRaisesRegex(RuntimeError, "No installed Chrome browser found"):
                 module.resolve_collection_browser("chrome")
+
+    def test_open_cdp_browser_does_not_require_query_date_or_output(self):
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--open-cdp-browser",
+                "--headless",
+            ],
+            cwd=PACKAGE_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("--open-cdp-browser opens a visible browser", proc.stderr)
+        self.assertNotIn("--output-dir is required", proc.stderr)
+        self.assertNotIn("one of --queries", proc.stderr)
+
+    def test_headless_requires_explicit_playwright_launch_collection_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--queries",
+                    "韓国旅行",
+                    "--recent-days",
+                    "1",
+                    "--output-dir",
+                    str(Path(tmp) / "run"),
+                    "--headless",
+                ],
+                cwd=PACKAGE_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("--headless is only supported with --collection-mode playwright-launch", proc.stderr)
 
     def test_page_state_classification_distinguishes_live_zero_causes(self):
         module = load_collector_module()
