@@ -35,9 +35,15 @@ OpenAI `gpt-image-1` 기반 이미지 생성 stdio MCP 서버. 도구 1개 (`gen
 `packages/image-canvas/README.md` 의 `.mcp.json` 등록 예와 환경변수
 (`OPENAI_API_KEY`, `IMAGE_CANVAS_OUTPUT_DIR`) 안내를 따라 호출 측에서 설정.
 
+### `packages/x-observed-search-collection/`
+X.com 공개 검색 화면에 노출되는 포스트를 주제별로 수집할 때 쓰는 운영 매뉴얼.
+full archive API 없이 브라우저 검색 surface를 날짜 window로 나누어 관측하고,
+`tweet_url` dedupe, gap 재검색, AI 분석 guard, 보고서 한계 문구까지 포함한다.
+집이나 개인 환경에서 다른 주제의 소셜 반응을 모을 때 `README.md` 절차를 기준으로 사용.
+
 ## 활용처 요약
 
-본 repo 가 다루는 패키지는 크게 세 갈래로 묶인다 (현 시점):
+본 repo 가 다루는 패키지는 크게 네 갈래로 묶인다 (현 시점):
 
 1. **외부 팀(분석팀) 세션 정리 자동화** — `analytics-leader-session-cleanup/`.
    private 운영 레포에 직접 접근 못 하는 외부 팀이 브라우저로 clone 해서 자기 환경에
@@ -52,6 +58,9 @@ OpenAI `gpt-image-1` 기반 이미지 생성 stdio MCP 서버. 도구 1개 (`gen
 4. **페르소나·팀 간 공유 도구** — `packages/image-canvas/`. 새벽·노을 자매가 같은 도구를
    페르소나 색깔별로 호출하는 패턴을 시작으로, 향후 다른 팀에서도 동일한 plain 도구를
    재사용 가능하게 둔다.
+4. **공개 검색 기반 소셜 수집 운영 매뉴얼** — `packages/x-observed-search-collection/`.
+   X.com full archive가 아닌 observed search dataset을 만들 때 필요한 query 설계, 1일
+   window 재수집, union/dedupe, gap check, 보고서 표현 원칙을 공유한다.
 
 ## 환경 주의
 
