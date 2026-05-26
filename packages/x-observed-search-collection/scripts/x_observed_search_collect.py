@@ -56,6 +56,14 @@ class DateWindow:
     end_exclusive: date
 
 
+@dataclass(frozen=True)
+class CollectionBrowser:
+    requested: str
+    channel: str | None
+    label: str
+    fallback_to_bundled_chromium: bool = False
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -97,7 +105,10 @@ def parse_args() -> argparse.Namespace:
         "--login-browser",
         choices=("auto", "chrome", "edge"),
         default="auto",
-        help="Installed browser to open for --prepare-login, default auto.",
+        help=(
+            "Installed browser for --prepare-login and live collection. "
+            "auto uses Chrome, then Edge; live collection falls back to bundled Chromium only if neither is installed."
+        ),
     )
     args = parser.parse_args()
     args.profile_dir = Path(os.path.expandvars(str(args.profile_dir))).expanduser()
@@ -266,7 +277,7 @@ def installed_browser_candidates(kind: str) -> list[Path]:
     candidates: list[Path] = []
     env = os.environ
     if kind in ("auto", "chrome"):
-        for name in ("chrome.exe", "chrome", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+        for name in ("chrome.exe", "chrome", "google-chrome", "google-chrome-stable"):
             found = shutil.which(name)
             if found:
                 candidates.append(Path(found))
@@ -289,6 +300,35 @@ def installed_browser_candidates(kind: str) -> list[Path]:
             seen.add(key)
             deduped.append(candidate)
     return deduped
+
+
+def resolve_collection_browser(kind: str) -> CollectionBrowser:
+    if kind == "chrome":
+        if installed_browser_candidates("chrome"):
+            return CollectionBrowser(requested=kind, channel="chrome", label="installed Chrome")
+        raise RuntimeError(
+            "No installed Chrome browser found for --login-browser chrome. "
+            "Install Chrome, use --login-browser edge, or use --login-browser auto for documented fallback."
+        )
+    if kind == "edge":
+        if installed_browser_candidates("edge"):
+            return CollectionBrowser(requested=kind, channel="msedge", label="installed Edge")
+        raise RuntimeError(
+            "No installed Edge browser found for --login-browser edge. "
+            "Install Edge, use --login-browser chrome, or use --login-browser auto for documented fallback."
+        )
+    if kind != "auto":
+        raise ValueError(f"unsupported --login-browser value: {kind}")
+    if installed_browser_candidates("chrome"):
+        return CollectionBrowser(requested=kind, channel="chrome", label="installed Chrome")
+    if installed_browser_candidates("edge"):
+        return CollectionBrowser(requested=kind, channel="msedge", label="installed Edge")
+    return CollectionBrowser(
+        requested=kind,
+        channel=None,
+        label="Playwright bundled Chromium",
+        fallback_to_bundled_chromium=True,
+    )
 
 
 def prepare_login(args: argparse.Namespace, tz: tzinfo) -> dict[str, object]:
@@ -326,32 +366,41 @@ def prepare_login(args: argparse.Namespace, tz: tzinfo) -> dict[str, object]:
 
 
 def collect_from_x(args: argparse.Namespace, queries: list[str], windows: list[DateWindow], tz: tzinfo) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
+    browser = resolve_collection_browser(args.login_browser)
     try:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
         raise RuntimeError(
             "Playwright is required for live X.com collection. Install with "
-            "`python -m pip install -r requirements.txt` and `python -m playwright install chromium`."
+            "`python -m pip install -r requirements.txt`. If auto falls back to bundled Chromium, "
+            "also run `python -m playwright install chromium`."
         ) from exc
 
     args.profile_dir.mkdir(parents=True, exist_ok=True)
+    args.collection_browser_label = browser.label
+    args.collection_browser_channel = browser.channel or "chromium"
+    args.collection_browser_fallback = browser.fallback_to_bundled_chromium
     collect_date = datetime.now(tz).date().isoformat()
     rows: list[dict[str, str]] = []
     window_log: list[dict[str, object]] = []
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(args.profile_dir),
-            headless=args.headless,
-            viewport={"width": 1365, "height": 900},
-        )
+        launch_kwargs = {
+            "user_data_dir": str(args.profile_dir),
+            "headless": args.headless,
+            "viewport": {"width": 1365, "height": 900},
+        }
+        if browser.channel:
+            launch_kwargs["channel"] = browser.channel
+        context = p.chromium.launch_persistent_context(**launch_kwargs)
         page = context.new_page()
         try:
             page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=45_000)
             if "login" in page.url.lower():
                 raise RuntimeError(
-                    "X.com login is required. Stop collection, run --prepare-login in an installed "
-                    "Chrome/Edge profile, log in manually there, close that browser, then retry."
+                    "X.com login is required. Stop collection, run --prepare-login with the same "
+                    "--login-browser value in an installed Chrome/Edge profile, log in manually there, "
+                    "close that browser, then retry."
                 )
             for query in queries:
                 for window in windows:
@@ -510,6 +559,12 @@ def build_manifest(
         "live_x_smoke": mode == "live",
         "headless": bool(args.headless),
         "profile_dir_used": "" if mode != "live" else str(args.profile_dir),
+        "browser_requested": "" if mode != "live" else args.login_browser,
+        "browser_used": "" if mode != "live" else getattr(args, "collection_browser_label", ""),
+        "browser_channel": "" if mode != "live" else getattr(args, "collection_browser_channel", ""),
+        "browser_fallback_to_bundled_chromium": (
+            False if mode != "live" else bool(getattr(args, "collection_browser_fallback", False))
+        ),
         "window_log": window_log,
     }
 

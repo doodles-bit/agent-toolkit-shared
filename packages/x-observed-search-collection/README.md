@@ -38,7 +38,7 @@ python scripts\x_observed_search_collect.py --help
 
 성공 기준:
 
-- help에 `--prepare-login`, `--max-posts-per-query-window`, `--fixture-csv`, `--dry-run`이 보인다.
+- help에 `--prepare-login`, `--login-browser`, `--max-posts-per-query-window`, `--fixture-csv`, `--dry-run`이 보인다.
 
 실패하면 볼 것:
 
@@ -59,18 +59,20 @@ python -c "from zoneinfo import ZoneInfo; print(ZoneInfo('Asia/Tokyo'))"
 성공 기준:
 
 - `pip install -r requirements.txt`가 `playwright`와 `tzdata`를 설치한다.
-- `playwright install chromium`이 Chromium 설치를 완료한다.
+- `playwright install chromium`이 bundled Chromium fallback 설치를 완료한다. 기본 live 수집은 설치된 Chrome 또는 Edge를 우선 사용한다.
 - 마지막 Python 명령이 `Asia/Tokyo`를 출력한다.
 
 실패하면 볼 것:
 
 - timezone 에러가 나면 `python -m pip install tzdata`를 다시 실행한다.
-- Playwright browser missing 에러가 나면 `python -m playwright install chromium`을 다시 실행한다.
+- bundled Chromium fallback 사용 시 Playwright browser missing 에러가 나면 `python -m playwright install chromium`을 다시 실행한다.
 - 회사/집 네트워크에서 다운로드가 막히면 여기서 중단하고 우회 다운로드나 자동 로그인 시도를 하지 않는다.
 
 ### 3. 일반 Chrome/Edge에서 로그인 profile 준비
 
 기본 profile은 worktree 안의 `.state`가 아니라 사용자 홈의 안정 경로다. 기본값은 `%USERPROFILE%\.agent-x-observed-search\chrome-profile`이며, 필요하면 `X_OBSERVED_PROFILE_DIR` 환경변수나 `--profile-dir`로 바꾼다. 같은 계정으로 worktree마다 새 profile을 만들지 않는다.
+
+`--login-browser`는 로그인 준비와 live 수집에 같이 적용된다. 기본 `auto`는 설치된 Chrome, 설치된 Edge, 마지막에만 Playwright bundled Chromium fallback 순서다. `--login-browser chrome` 또는 `--login-browser edge`를 명시하면 해당 설치 브라우저가 없을 때 X.com에 접속하기 전에 실패한다.
 
 ```powershell
 python scripts\x_observed_search_collect.py `
@@ -83,7 +85,7 @@ python scripts\x_observed_search_collect.py `
 - 설치된 일반 Chrome 또는 Edge 창이 visible 모드로 열린다.
 - 사용자가 직접 X.com에 로그인한다.
 - 터미널 JSON에 `"mode": "prepare-login"`, `"automation_browser": false`, `"collection_started": false`, `"cookie_exported": false`, `"browser_path"`가 나온다.
-- 로그인 후 브라우저를 직접 닫고 다음 smoke로 넘어간다. profile이 열려 있으면 Playwright 수집이 같은 profile을 잡지 못할 수 있다.
+- 로그인 후 브라우저를 직접 닫고 다음 smoke로 넘어간다. live 수집도 같은 `--login-browser` 선택과 profile을 쓰므로, profile이 열려 있으면 Playwright 수집이 같은 profile을 잡지 못할 수 있다.
 
 실패하면 볼 것:
 
@@ -160,6 +162,7 @@ python scripts\x_observed_search_collect.py `
   --queries "韓国旅行" `
   --recent-days 1 `
   --timezone Asia/Tokyo `
+  --login-browser auto `
   --output-dir reports\operations\login-profile-smoke `
   --max-posts-per-query-window 1 `
   --max-no-new 1 `
@@ -174,7 +177,7 @@ python scripts\x_observed_search_collect.py `
 
 실패하면 볼 것:
 
-- login URL로 돌아가거나 `X.com login is required`가 나오면 수집을 멈추고 3단계의 일반 Chrome/Edge profile 상태를 확인한다. 제한 메시지가 떴다면 오늘은 반복하지 않는다.
+- login URL로 돌아가거나 `X.com login is required`가 나오면 수집을 멈추고 3단계의 일반 Chrome/Edge profile 상태와 같은 `--login-browser` 값을 썼는지 확인한다. 제한 메시지가 떴다면 오늘은 반복하지 않는다.
 - `no-visible-results`는 실패가 아닐 수 있다. 비로그인 surface 제한, 검색 surface 비결정성, 실제 저건수, selector 변화 가능성을 구분해야 한다.
 - selector timeout이 반복되고 수동 화면에는 결과가 보이면 selector 변경 가능성을 코드 이슈로 기록한다.
 
@@ -188,6 +191,7 @@ python scripts\x_observed_search_collect.py `
   --start-date 2026-05-25 `
   --end-date 2026-05-25 `
   --timezone Asia/Tokyo `
+  --login-browser auto `
   --output-dir reports\operations\jp-tourism-smoke-2026-05-25 `
   --max-posts-per-query-window 5 `
   --max-no-new 3 `
@@ -269,7 +273,7 @@ output root: C:\Users\<you>\project_repo\x_observed_example_game
 ## 준비물
 
 - Python 3.11+ 권장.
-- Chrome 또는 Chromium.
+- Chrome 또는 Edge 권장. bundled Chromium은 설치 브라우저가 없을 때의 live fallback이다.
 - Playwright.
 - 수집 전용 X 계정. 브라우저 프로필에 로그인 세션을 저장해 두는 방식 권장.
 - 로컬 저장 폴더. 예: `reports/operations/x_topic_collect_<date>/`.
@@ -345,13 +349,14 @@ python scripts\x_observed_search_collect.py `
   --start-date 2026-05-25 `
   --end-date 2026-05-25 `
   --timezone Asia/Tokyo `
+  --login-browser auto `
   --output-dir reports\operations\jp-tourism-smoke `
   --max-posts-per-query-window 5 `
   --max-no-new 3 `
   --page-delay 3
 ```
 
-수집 명령에서 로그인하지 않는다. `--prepare-login`으로 일반 Chrome/Edge profile을 먼저 준비하고, 브라우저를 닫은 뒤 같은 기본 profile을 재사용한다. X 접근 제한이나 약관 우회는 하지 않는다.
+수집 명령에서 로그인하지 않는다. `--prepare-login`으로 일반 Chrome/Edge profile을 먼저 준비하고, 브라우저를 닫은 뒤 같은 기본 profile과 같은 `--login-browser` 선택을 재사용한다. 기본 `auto`는 Chrome, Edge, bundled Chromium fallback 순서이며 Chromium은 설치 Chrome/Edge가 없을 때만 마지막 fallback이다. X 접근 제한이나 약관 우회는 하지 않는다.
 
 ## 0부터 설치하기
 
@@ -398,7 +403,7 @@ python -m pip install playwright python-dotenv pandas
 python -m playwright install chromium
 ```
 
-Chrome channel을 직접 쓰는 스크립트라면 `python -m playwright install chromium`이 없어도 될 수 있다. 처음 구성에서는 설치해 두는 편이 단순하다.
+기본 live 수집은 설치된 Chrome 또는 Edge channel을 먼저 쓰므로 `python -m playwright install chromium`은 마지막 fallback 준비용이다. 처음 구성에서는 설치해 두는 편이 단순하지만, Chrome/Edge profile을 Chromium으로 여는 것이 기본 동작은 아니다.
 
 ### 3. `.gitignore` 만들기
 
@@ -457,13 +462,14 @@ DATABASE_URL=
 | `--dry-run` | no | X.com 접속 없이 빈 산출물과 manifest 생성 |
 | `--fixture-csv` | no | fixture CSV에서 산출물 생성 |
 | `--prepare-login` / `--open-login-profile` | no | 설치된 Chrome/Edge로 X.com home을 열고 수집 없이 즉시 종료 |
-| `--login-browser` | no | `auto`, `chrome`, `edge` 중 선택. default `auto` |
+| `--login-browser` | no | prepare-login과 live 수집에 같이 적용. `auto`, `chrome`, `edge` 중 선택. default `auto`; live `auto`는 Chrome, Edge, bundled Chromium fallback 순서 |
 
 가장 중요한 구현 요구사항:
 
 - 수집 단계는 Playwright persistent browser profile을 사용하지만, 로그인 자체는 수집기 안에서 하지 않는다.
-- 첫 인증 준비는 `--prepare-login`으로 설치된 일반 Chrome/Edge 창에서 수행한다.
-- `https://x.com/home`에 접근했을 때 login 요구가 보이면 수집을 중단하고 일반 브라우저 profile 상태를 다시 확인한다.
+- 첫 인증 준비는 `--prepare-login`으로 설치된 일반 Chrome/Edge 창에서 수행하고, live 수집은 같은 `--login-browser` 선택을 적용한다.
+- `--login-browser auto`는 설치 Chrome, 설치 Edge, bundled Chromium fallback 순서다. `chrome` 또는 `edge` 명시 시 해당 설치 브라우저가 없으면 X.com 접속 전 실패한다.
+- `https://x.com/home`에 접근했을 때 login 요구가 보이면 수집을 중단하고 일반 브라우저 profile 상태와 `--login-browser` 값을 다시 확인한다.
 - 검색 URL은 `https://x.com/search?q=<query since:YYYY-MM-DD until:YYYY-MM-DD>&src=typed_query&f=live` 형태를 사용한다.
 - `tweet_url`을 반드시 저장한다.
 - 같은 run 안에서는 `tweet_url` 기준 중복을 제거한다.
@@ -480,7 +486,7 @@ python scripts\x_observed_search_collect.py `
   --login-browser auto
 ```
 
-브라우저가 열리면 X.com에 직접 로그인한다. 2FA가 있으면 직접 처리한다. 스크립트는 계정/비밀번호를 받지 않고, cookie를 export하지 않으며, 검색 수집도 시작하지 않는다. 로그인 후 브라우저를 닫고 첫 smoke run을 실행한다.
+브라우저가 열리면 X.com에 직접 로그인한다. 2FA가 있으면 직접 처리한다. 스크립트는 계정/비밀번호를 받지 않고, cookie를 export하지 않으며, 검색 수집도 시작하지 않는다. 로그인 후 브라우저를 닫고 첫 smoke run을 실행한다. Edge를 명시해 준비했다면 수집에도 `--login-browser edge`를 붙인다.
 
 주의:
 
@@ -500,6 +506,7 @@ python scripts\x_observed_search_collect.py `
   --end-date 2026-01-01 `
   --queries "#Topic,Topic Name" `
   --timezone Asia/Tokyo `
+  --login-browser auto `
   --output-dir reports\operations\topic-smoke-2026-01-01 `
   --window-days 1 `
   --max-posts-per-query-window 10 `
@@ -525,6 +532,7 @@ python scripts\x_observed_search_collect.py `
   --end-date 2026-01-31 `
   --queries "#Topic,Topic Name,TopicName" `
   --timezone Asia/Tokyo `
+  --login-browser auto `
   --output-dir reports\operations\topic-observed-2026-01 `
   --window-days 1 `
   --max-posts-per-query-window 100 `
@@ -612,6 +620,7 @@ python scripts\x_observed_search_collect.py `
   --max-no-new 10 `
   --queries "#Topic,Topic Name,TopicName" `
   --timezone Asia/Tokyo `
+  --login-browser auto `
   --output-dir reports\operations\x-topic-raw-2026-01
 ```
 

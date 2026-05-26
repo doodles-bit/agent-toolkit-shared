@@ -1,16 +1,31 @@
 import csv
+import importlib.util
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = PACKAGE_ROOT / "scripts" / "x_observed_search_collect.py"
 FIXTURE = PACKAGE_ROOT / "tests" / "fixtures" / "japan_tourism_observed_fixture.csv"
 QUERY_FILE = PACKAGE_ROOT / "queries" / "japan-tourism-ja.txt"
+
+
+def load_collector_module():
+    module_name = "x_observed_search_collect_under_test"
+    spec = importlib.util.spec_from_file_location(module_name, SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    assert spec.loader is not None
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(module_name, None)
+    return module
 
 
 class XObservedSearchCollectTest(unittest.TestCase):
@@ -81,6 +96,73 @@ class XObservedSearchCollectTest(unittest.TestCase):
                 self.assertIn("--prepare-login opens a visible browser", proc.stderr)
                 self.assertNotIn("--output-dir is required", proc.stderr)
                 self.assertNotIn("one of --queries", proc.stderr)
+
+    def test_help_describes_login_browser_for_live_collection(self):
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--help",
+            ],
+            cwd=PACKAGE_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("--login-browser", proc.stdout)
+        self.assertIn("Installed browser for --prepare-login and live", proc.stdout)
+        self.assertIn("collection falls back to bundled Chromium", proc.stdout)
+
+    def test_collection_browser_auto_prefers_installed_chrome(self):
+        module = load_collector_module()
+
+        def fake_candidates(kind):
+            return {
+                "chrome": [Path("C:/Program Files/Google/Chrome/Application/chrome.exe")],
+                "edge": [Path("C:/Program Files/Microsoft/Edge/Application/msedge.exe")],
+            }.get(kind, [])
+
+        with patch.object(module, "installed_browser_candidates", side_effect=fake_candidates):
+            browser = module.resolve_collection_browser("auto")
+
+        self.assertEqual(browser.channel, "chrome")
+        self.assertEqual(browser.label, "installed Chrome")
+        self.assertFalse(browser.fallback_to_bundled_chromium)
+
+    def test_collection_browser_auto_uses_edge_before_chromium_fallback(self):
+        module = load_collector_module()
+
+        def fake_candidates(kind):
+            return {
+                "chrome": [],
+                "edge": [Path("C:/Program Files/Microsoft/Edge/Application/msedge.exe")],
+            }.get(kind, [])
+
+        with patch.object(module, "installed_browser_candidates", side_effect=fake_candidates):
+            browser = module.resolve_collection_browser("auto")
+
+        self.assertEqual(browser.channel, "msedge")
+        self.assertEqual(browser.label, "installed Edge")
+        self.assertFalse(browser.fallback_to_bundled_chromium)
+
+    def test_collection_browser_auto_limits_chromium_to_last_fallback(self):
+        module = load_collector_module()
+
+        with patch.object(module, "installed_browser_candidates", return_value=[]):
+            browser = module.resolve_collection_browser("auto")
+
+        self.assertIsNone(browser.channel)
+        self.assertEqual(browser.label, "Playwright bundled Chromium")
+        self.assertTrue(browser.fallback_to_bundled_chromium)
+
+    def test_collection_browser_explicit_choice_fails_without_installed_browser(self):
+        module = load_collector_module()
+
+        with patch.object(module, "installed_browser_candidates", return_value=[]):
+            with self.assertRaisesRegex(RuntimeError, "No installed Chrome browser found"):
+                module.resolve_collection_browser("chrome")
 
 
 if __name__ == "__main__":
