@@ -62,23 +62,25 @@ class XObservedSearchCollectTest(unittest.TestCase):
             self.assertIn("전체 언급량으로 해석 금지", gap_text)
 
     def test_prepare_login_does_not_require_query_date_or_output(self):
-        proc = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT),
-                "--prepare-login",
-                "--headless",
-            ],
-            cwd=PACKAGE_ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        for flag in ("--prepare-login", "--open-login-profile"):
+            with self.subTest(flag=flag):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPT),
+                        flag,
+                        "--headless",
+                    ],
+                    cwd=PACKAGE_ROOT,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
 
-        self.assertEqual(proc.returncode, 2)
-        self.assertIn("--prepare-login opens a visible browser", proc.stderr)
-        self.assertNotIn("--output-dir is required", proc.stderr)
-        self.assertNotIn("one of --queries", proc.stderr)
+                self.assertEqual(proc.returncode, 2)
+                self.assertIn("--prepare-login opens a visible browser", proc.stderr)
+                self.assertNotIn("--output-dir is required", proc.stderr)
+                self.assertNotIn("one of --queries", proc.stderr)
 
 
 if __name__ == "__main__":

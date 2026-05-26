@@ -68,25 +68,28 @@ python -c "from zoneinfo import ZoneInfo; print(ZoneInfo('Asia/Tokyo'))"
 - Playwright browser missing 에러가 나면 `python -m playwright install chromium`을 다시 실행한다.
 - 회사/집 네트워크에서 다운로드가 막히면 여기서 중단하고 우회 다운로드나 자동 로그인 시도를 하지 않는다.
 
-### 3. 로그인 profile 준비
+### 3. 일반 Chrome/Edge에서 로그인 profile 준비
+
+기본 profile은 worktree 안의 `.state`가 아니라 사용자 홈의 안정 경로다. 기본값은 `%USERPROFILE%\.agent-x-observed-search\chrome-profile`이며, 필요하면 `X_OBSERVED_PROFILE_DIR` 환경변수나 `--profile-dir`로 바꾼다. 같은 계정으로 worktree마다 새 profile을 만들지 않는다.
 
 ```powershell
 python scripts\x_observed_search_collect.py `
-  --profile-dir .state\x_chrome_profile `
   --prepare-login `
-  --login-wait-seconds 300
+  --login-browser auto
 ```
 
 성공 기준:
 
-- 브라우저가 visible 모드로 열린다.
+- 설치된 일반 Chrome 또는 Edge 창이 visible 모드로 열린다.
 - 사용자가 직접 X.com에 로그인한다.
-- 종료 JSON에 `"mode": "prepare-login"`, `"login_state": "logged-in"`, `"collection_started": false`, `"cookie_exported": false`가 나온다.
+- 터미널 JSON에 `"mode": "prepare-login"`, `"automation_browser": false`, `"collection_started": false`, `"cookie_exported": false`, `"browser_path"`가 나온다.
+- 로그인 후 브라우저를 직접 닫고 다음 smoke로 넘어간다. profile이 열려 있으면 Playwright 수집이 같은 profile을 잡지 못할 수 있다.
 
 실패하면 볼 것:
 
-- `"login_state": "login-required"` 또는 `"unknown"`이면 로그인 완료 전에 timeout 되었거나 X surface가 달라진 것이다. 같은 명령을 다시 실행해 직접 로그인 상태를 확인한다.
+- `로그인이 일시적으로 제한되었습니다. 나중에 다시 시도해 주세요.`가 뜨면 즉시 중단한다. 새 profile 반복 생성, Playwright/자동화 브라우저 로그인, 즉시 재시도는 하지 않는다. 같은 날 추가 로그인 시도는 제한을 악화시킬 수 있으므로 충분히 기다린 뒤 일반 브라우저에서만 다시 확인한다.
 - login URL이나 signup flow로 돌아가면 세션이 준비되지 않은 상태다. 계정/비밀번호를 스크립트에 넣지 않는다.
+- `No installed Chrome/Edge browser found`가 나오면 Chrome 또는 Edge 설치 상태를 확인하거나 `--login-browser chrome`/`--login-browser edge`를 명시한다.
 - `--prepare-login`은 `--headless`, `--dry-run`, `--fixture-csv`와 함께 쓰지 않는다.
 
 ### 4. fixture smoke
@@ -158,7 +161,6 @@ python scripts\x_observed_search_collect.py `
   --recent-days 1 `
   --timezone Asia/Tokyo `
   --output-dir reports\operations\login-profile-smoke `
-  --profile-dir .state\x_chrome_profile `
   --max-posts-per-query-window 1 `
   --max-no-new 1 `
   --page-delay 3
@@ -172,7 +174,7 @@ python scripts\x_observed_search_collect.py `
 
 실패하면 볼 것:
 
-- login URL로 돌아가거나 `X.com login is required`가 나오면 3단계로 돌아가 profile을 다시 준비한다.
+- login URL로 돌아가거나 `X.com login is required`가 나오면 수집을 멈추고 3단계의 일반 Chrome/Edge profile 상태를 확인한다. 제한 메시지가 떴다면 오늘은 반복하지 않는다.
 - `no-visible-results`는 실패가 아닐 수 있다. 비로그인 surface 제한, 검색 surface 비결정성, 실제 저건수, selector 변화 가능성을 구분해야 한다.
 - selector timeout이 반복되고 수동 화면에는 결과가 보이면 selector 변경 가능성을 코드 이슈로 기록한다.
 
@@ -187,7 +189,6 @@ python scripts\x_observed_search_collect.py `
   --end-date 2026-05-25 `
   --timezone Asia/Tokyo `
   --output-dir reports\operations\jp-tourism-smoke-2026-05-25 `
-  --profile-dir .state\x_chrome_profile `
   --max-posts-per-query-window 5 `
   --max-no-new 3 `
   --page-delay 3
@@ -209,12 +210,13 @@ python scripts\x_observed_search_collect.py `
 
 ```powershell
 git status --short --ignored
-git check-ignore -v .state\x_chrome_profile reports\operations\jp-tourism-smoke-2026-05-25\raw.csv
+git check-ignore -v reports\operations\jp-tourism-smoke-2026-05-25\raw.csv
 ```
 
 성공 기준:
 
-- `.state/`와 `reports/operations/`가 ignored로 표시된다.
+- `reports/operations/`가 ignored로 표시된다.
+- 기본 profile은 repo 밖 `%USERPROFILE%\.agent-x-observed-search\chrome-profile`에 있으므로 git 대상이 아니다.
 - raw/profile/session/cookie가 git commit 대상에 들어가지 않는다.
 
 실패하면 볼 것:
@@ -332,7 +334,7 @@ python scripts\x_observed_search_collect.py `
 
 ### Live X.com observed-search smoke
 
-아래는 로그인 세션이 준비된 개인 환경에서만 소규모로 실행한다. 계정 ID/PW, cookie, `.state/x_chrome_profile`은 repo에 커밋하지 않는다.
+아래는 일반 Chrome/Edge에서 로그인 세션이 준비된 개인 환경에서만 소규모로 실행한다. 계정 ID/PW, cookie, browser profile은 repo에 커밋하지 않는다.
 
 ```powershell
 python -m pip install -r requirements.txt
@@ -344,13 +346,12 @@ python scripts\x_observed_search_collect.py `
   --end-date 2026-05-25 `
   --timezone Asia/Tokyo `
   --output-dir reports\operations\jp-tourism-smoke `
-  --profile-dir .state\x_chrome_profile `
   --max-posts-per-query-window 5 `
   --max-no-new 3 `
   --page-delay 3
 ```
 
-처음 실행은 `--headless`를 쓰지 않는다. 브라우저가 열리면 사용자가 직접 로그인하고, 같은 profile dir을 이후에도 계속 쓴다. X 접근 제한이나 약관 우회는 하지 않는다.
+수집 명령에서 로그인하지 않는다. `--prepare-login`으로 일반 Chrome/Edge profile을 먼저 준비하고, 브라우저를 닫은 뒤 같은 기본 profile을 재사용한다. X 접근 제한이나 약관 우회는 하지 않는다.
 
 ## 0부터 설치하기
 
@@ -368,7 +369,6 @@ mkdir reports\operations
 mkdir data
 mkdir data\raw
 mkdir data\processed
-mkdir .state
 ```
 
 권장 구조:
@@ -384,11 +384,9 @@ x_observed_topic/
   data/
     raw/
     processed/
-  .state/
-    x_chrome_profile/
 ```
 
-`.state/x_chrome_profile/`은 X 로그인 세션이 들어가는 로컬 브라우저 프로필이다. 절대 공유 repo에 올리지 않는다.
+X 로그인 profile은 프로젝트 폴더 밖의 `%USERPROFILE%\.agent-x-observed-search\chrome-profile` 기본 경로를 쓴다. 절대 공유 repo에 올리지 않는다.
 
 ### 2. Python 가상환경 만들기
 
@@ -407,7 +405,6 @@ Chrome channel을 직접 쓰는 스크립트라면 `python -m playwright install
 ```text
 .venv/
 .env
-.state/
 reports/operations/
 data/raw/
 data/processed/
@@ -416,14 +413,14 @@ data/processed/
 
 raw 데이터와 로그인 세션, API 키는 기본적으로 커밋하지 않는다. 공유해야 할 것은 요약 문서, schema, 재현 가능한 query/manifest이다.
 
-본 패키지의 `.gitignore`도 `.state/`, `.env*`, `reports/operations/`, `data/raw/`, `data/processed/`, 브라우저 profile/cookie/session 파일, run output 기본 파일을 제외한다.
+본 패키지의 `.gitignore`도 `.state/`, `.env*`, `reports/operations/`, `data/raw/`, `data/processed/`, 브라우저 profile/cookie/session 파일, run output 기본 파일을 제외한다. 기본 profile은 repo 밖 사용자 홈에 있어 git 대상이 아니다.
 
 ### 4. `.env` 만들기
 
 처음에는 X API token이 필요 없다. 이 방식은 X API가 아니라 브라우저 로그인 세션을 사용한다.
 
 ```text
-X_PROFILE_DIR=.state/x_chrome_profile
+X_OBSERVED_PROFILE_DIR=C:\Users\<you>\.agent-x-observed-search\chrome-profile
 OUTPUT_ROOT=reports/operations
 SEARCH_QUERIES=#Topic,Topic Name,TopicName
 SCROLL_DELAY=2
@@ -455,18 +452,18 @@ DATABASE_URL=
 | `--max-no-new` | no | default `10` |
 | `--scroll-delay` | no | default `2` seconds |
 | `--page-delay` | no | default `2` seconds |
-| `--profile-dir` | no | default `.state/x_chrome_profile` |
+| `--profile-dir` | no | default `X_OBSERVED_PROFILE_DIR` 또는 `~/.agent-x-observed-search/chrome-profile` |
 | `--headless` | no | login 완료 후에만 사용 |
 | `--dry-run` | no | X.com 접속 없이 빈 산출물과 manifest 생성 |
 | `--fixture-csv` | no | fixture CSV에서 산출물 생성 |
-| `--prepare-login` | no | X.com home을 non-headless persistent profile로 열고 수집 없이 종료 |
-| `--login-wait-seconds` | no | `--prepare-login`에서 로그인 상태를 기다리는 시간, default `180` |
+| `--prepare-login` / `--open-login-profile` | no | 설치된 Chrome/Edge로 X.com home을 열고 수집 없이 즉시 종료 |
+| `--login-browser` | no | `auto`, `chrome`, `edge` 중 선택. default `auto` |
 
 가장 중요한 구현 요구사항:
 
-- Playwright persistent browser profile을 사용한다.
-- 첫 인증 준비는 `--prepare-login`으로 headless가 아닌 브라우저 창에서 수행한다.
-- `https://x.com/home`에 접근해 로그인 여부를 확인한다.
+- 수집 단계는 Playwright persistent browser profile을 사용하지만, 로그인 자체는 수집기 안에서 하지 않는다.
+- 첫 인증 준비는 `--prepare-login`으로 설치된 일반 Chrome/Edge 창에서 수행한다.
+- `https://x.com/home`에 접근했을 때 login 요구가 보이면 수집을 중단하고 일반 브라우저 profile 상태를 다시 확인한다.
 - 검색 URL은 `https://x.com/search?q=<query since:YYYY-MM-DD until:YYYY-MM-DD>&src=typed_query&f=live` 형태를 사용한다.
 - `tweet_url`을 반드시 저장한다.
 - 같은 run 안에서는 `tweet_url` 기준 중복을 제거한다.
@@ -474,24 +471,24 @@ DATABASE_URL=
 
 ### 6. X.com 로그인 세션 만들기
 
-첫 실행은 인증 준비 단계다. 이 단계에서는 수집을 시작하지 않고, `.state/x_chrome_profile`에 사용자가 직접 로그인한 브라우저 세션을 남기는 것이 목적이다.
+첫 실행은 인증 준비 단계다. 이 단계에서는 수집을 시작하지 않고, 사용자 홈의 안정 profile에 사용자가 직접 로그인한 브라우저 세션을 남기는 것이 목적이다.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
 python scripts\x_observed_search_collect.py `
-  --profile-dir .state\x_chrome_profile `
   --prepare-login `
-  --login-wait-seconds 300
+  --login-browser auto
 ```
 
-브라우저가 열리면 X.com에 직접 로그인한다. 2FA가 있으면 직접 처리한다. 스크립트는 계정/비밀번호를 받지 않고, cookie를 export하지 않으며, 검색 수집도 시작하지 않는다. 종료 JSON의 `login_state`가 `logged-in`이면 같은 `--profile-dir`로 첫 smoke run을 실행한다. `login-required` 또는 `unknown`이면 브라우저에서 로그인 상태를 확인하고 같은 명령을 다시 실행한다.
+브라우저가 열리면 X.com에 직접 로그인한다. 2FA가 있으면 직접 처리한다. 스크립트는 계정/비밀번호를 받지 않고, cookie를 export하지 않으며, 검색 수집도 시작하지 않는다. 로그인 후 브라우저를 닫고 첫 smoke run을 실행한다.
 
 주의:
 
 - X 계정 ID/PW를 스크립트에 넣지 않는다.
 - cookie를 export해서 repo에 넣지 않는다.
-- `.state/x_chrome_profile` 폴더는 개인 PC에만 둔다.
-- 로그인 세션이 만료되면 같은 `--prepare-login` 방식으로 다시 headless 없이 실행해 재로그인한다.
+- `%USERPROFILE%\.agent-x-observed-search\chrome-profile` 폴더는 개인 PC에만 둔다.
+- `로그인이 일시적으로 제한되었습니다. 나중에 다시 시도해 주세요.`가 뜨면 즉시 중단하고, 새 profile 생성이나 자동화 브라우저 로그인 재시도를 하지 않는다.
+- 로그인 세션이 만료되면 같은 `--prepare-login` 방식으로 일반 Chrome/Edge에서만 재로그인한다.
 
 ### 7. 첫 smoke run
 
@@ -506,8 +503,7 @@ python scripts\x_observed_search_collect.py `
   --output-dir reports\operations\topic-smoke-2026-01-01 `
   --window-days 1 `
   --max-posts-per-query-window 10 `
-  --max-no-new 5 `
-  --profile-dir .state\x_chrome_profile
+  --max-no-new 5
 ```
 
 pass 기준:
@@ -532,8 +528,7 @@ python scripts\x_observed_search_collect.py `
   --output-dir reports\operations\topic-observed-2026-01 `
   --window-days 1 `
   --max-posts-per-query-window 100 `
-  --max-no-new 10 `
-  --profile-dir .state\x_chrome_profile
+  --max-no-new 10
 ```
 
 처음부터 `--headless`를 쓰지 않는다. 며칠 운용해서 로그인 세션이 안정적인 것을 확인한 뒤에만 headless를 켠다.
@@ -602,7 +597,7 @@ expanded: "Hi Fi Rush", "hifi rush", "Tango Hi-Fi Rush", "KRAFTON Hi-Fi Rush"
 ## 권장 실행 절차
 
 아래 절차는 위의 `0부터 설치하기`와 첫 smoke run이 끝난 뒤의 운영 단계다.
-아직 X 로그인 세션이 없으면 이 단계로 바로 넘어가지 말고 먼저 `.state/x_chrome_profile`에 로그인 세션을 만든다.
+아직 X 로그인 세션이 없으면 이 단계로 바로 넘어가지 말고 먼저 `--prepare-login`으로 사용자 홈의 안정 profile에 로그인 세션을 만든다.
 
 ### 1. raw 먼저 만들기
 
@@ -617,8 +612,7 @@ python scripts\x_observed_search_collect.py `
   --max-no-new 10 `
   --queries "#Topic,Topic Name,TopicName" `
   --timezone Asia/Tokyo `
-  --output-dir reports\operations\x-topic-raw-2026-01 `
-  --profile-dir .state\x_chrome_profile
+  --output-dir reports\operations\x-topic-raw-2026-01
 ```
 
 실제 스크립트 이름은 프로젝트마다 달라도 된다. 다만 옵션 의미는 위 형태로 맞추면 다른 프로젝트에서도 재사용하기 쉽다. 새 환경에서는 처음 며칠 동안 `--headless`를 쓰지 않고 로그인 유지 상태를 확인한다.
@@ -655,8 +649,7 @@ python scripts\x_observed_search_collect.py `
   --max-no-new 50 `
   --queries "#Topic,Topic Name,TopicName,topic name,TOPIC NAME" `
   --timezone Asia/Tokyo `
-  --output-dir reports\operations\x-topic-retry-2026-01-08 `
-  --profile-dir .state\x_chrome_profile
+  --output-dir reports\operations\x-topic-retry-2026-01-08
 ```
 
 재검색해도 0건이면 `현재 검색 surface 기준 0건`이라고 기록한다. `실제 0건`이라고 쓰지 않는다.
@@ -763,7 +756,7 @@ X full archive API 기반 전체 언급량이 아니므로, 날짜별 비교는 
 
 - [ ] 검색어 core/expanded 세트 정의.
 - [ ] 날짜 범위와 timezone 기준 명시.
-- [ ] `--prepare-login`으로 local profile 로그인 상태 확인.
+- [ ] `--prepare-login`으로 일반 Chrome/Edge stable profile 로그인 준비.
 - [ ] 1일 window raw 수집 실행.
 - [ ] raw union 및 `tweet_url` dedupe.
 - [ ] 날짜별 0건/저건수 재검색.
@@ -793,7 +786,7 @@ X full archive API 기반 전체 언급량이 아니므로, 날짜별 비교는 
 
 ### 집 환경에서 로그인 창이 뜸
 
-처음 1회는 headless를 끄고 브라우저에서 로그인한다. 이후 같은 persistent Chrome profile을 쓰면 세션이 유지된다. 계정/2FA 정보는 repo에 저장하지 않는다.
+수집기 안에서 로그인하지 않는다. `--prepare-login`으로 설치된 일반 Chrome/Edge를 열고 직접 로그인한 뒤, 브라우저를 닫고 수집 명령을 다시 실행한다. `로그인이 일시적으로 제한되었습니다. 나중에 다시 시도해 주세요.`가 뜨면 새 profile 생성이나 반복 로그인 시도를 멈추고 충분히 기다린다. 계정/2FA 정보는 repo나 스크립트에 저장하지 않는다.
 
 ## 최소 원칙
 

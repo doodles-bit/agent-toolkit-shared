@@ -12,9 +12,11 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
-import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone, tzinfo
@@ -26,6 +28,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 SOURCE_LABEL = "Observed X.com public searchable posts"
 SOURCE_DETAIL = "X.com web search observed public searchable posts"
+DEFAULT_PROFILE_DIR = Path(
+    os.environ.get("X_OBSERVED_PROFILE_DIR", Path.home() / ".agent-x-observed-search" / "chrome-profile")
+)
 RAW_COLUMNS = [
     "collect_date",
     "tweet_date",
@@ -72,22 +77,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-no-new", type=int, default=10)
     parser.add_argument("--scroll-delay", type=float, default=2.0)
     parser.add_argument("--page-delay", type=float, default=2.0, help="Delay between query-window search pages.")
-    parser.add_argument("--profile-dir", type=Path, default=Path(".state/x_chrome_profile"))
+    parser.add_argument(
+        "--profile-dir",
+        type=Path,
+        default=DEFAULT_PROFILE_DIR,
+        help="Persistent local browser profile. Defaults to X_OBSERVED_PROFILE_DIR or ~/.agent-x-observed-search/chrome-profile.",
+    )
     parser.add_argument("--headless", action="store_true", help="Use only after login profile is ready.")
     parser.add_argument("--fixture-csv", type=Path, help="Read observed rows from a fixture CSV instead of X.com.")
     parser.add_argument("--dry-run", action="store_true", help="Create empty artifacts and manifest without X.com access.")
     parser.add_argument(
         "--prepare-login",
+        "--open-login-profile",
+        dest="prepare_login",
         action="store_true",
-        help="Open X.com home with the persistent profile and exit without collecting.",
+        help="Open X.com home in installed Chrome/Edge with the persistent profile and exit without collecting.",
     )
     parser.add_argument(
-        "--login-wait-seconds",
-        type=int,
-        default=180,
-        help="Seconds to wait for a visible login during --prepare-login.",
+        "--login-browser",
+        choices=("auto", "chrome", "edge"),
+        default="auto",
+        help="Installed browser to open for --prepare-login, default auto.",
     )
     args = parser.parse_args()
+    args.profile_dir = Path(os.path.expandvars(str(args.profile_dir))).expanduser()
     validate_args(args, parser)
     return args
 
@@ -98,8 +111,6 @@ def validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
             parser.error("--prepare-login opens a visible browser; remove --headless.")
         if args.fixture_csv or args.dry_run:
             parser.error("--prepare-login cannot be combined with --fixture-csv or --dry-run.")
-        if args.login_wait_seconds <= 0:
-            parser.error("--login-wait-seconds must be positive.")
         return
     if not args.queries and not args.query_file:
         parser.error("one of --queries or --query-file is required unless --prepare-login is used.")
@@ -251,70 +262,67 @@ def filter_rows(rows: Iterable[dict[str, str]], queries: list[str], start: date,
     return filtered
 
 
-def detect_login_state(page) -> str:
-    current_url = page.url.lower()
-    if "/i/flow/login" in current_url or "/login" in current_url:
-        return "login-required"
-    try:
-        logged_in_selectors = [
-            '[data-testid="SideNav_AccountSwitcher_Button"]',
-            '[data-testid="AppTabBar_Home_Link"]',
-            'a[href="/home"]',
-        ]
-        for selector in logged_in_selectors:
-            if page.locator(selector).count() > 0:
-                return "logged-in"
-        login_selectors = [
-            'a[href="/login"]',
-            'a[href*="/i/flow/login"]',
-            '[data-testid="loginButton"]',
-        ]
-        for selector in login_selectors:
-            if page.locator(selector).count() > 0:
-                return "login-required"
-    except Exception:
-        return "unknown"
-    return "unknown"
+def installed_browser_candidates(kind: str) -> list[Path]:
+    candidates: list[Path] = []
+    env = os.environ
+    if kind in ("auto", "chrome"):
+        for name in ("chrome.exe", "chrome", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+            found = shutil.which(name)
+            if found:
+                candidates.append(Path(found))
+        for base in (env.get("LOCALAPPDATA"), env.get("PROGRAMFILES"), env.get("PROGRAMFILES(X86)")):
+            if base:
+                candidates.append(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe")
+    if kind in ("auto", "edge"):
+        for name in ("msedge.exe", "msedge", "microsoft-edge"):
+            found = shutil.which(name)
+            if found:
+                candidates.append(Path(found))
+        for base in (env.get("PROGRAMFILES"), env.get("PROGRAMFILES(X86)"), env.get("LOCALAPPDATA")):
+            if base:
+                candidates.append(Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key not in seen and candidate.exists():
+            seen.add(key)
+            deduped.append(candidate)
+    return deduped
 
 
 def prepare_login(args: argparse.Namespace, tz: tzinfo) -> dict[str, object]:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise RuntimeError(
-            "Playwright is required for X.com login preparation. Install with "
-            "`python -m pip install -r requirements.txt` and `python -m playwright install chromium`."
-        ) from exc
-
     args.profile_dir.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + args.login_wait_seconds
-    with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(args.profile_dir),
-            headless=False,
-            viewport={"width": 1365, "height": 900},
+    browsers = installed_browser_candidates(args.login_browser)
+    if not browsers:
+        raise RuntimeError(
+            "No installed Chrome/Edge browser found. Install Chrome or Edge, or pass --login-browser chrome/edge."
         )
-        page = context.new_page()
-        try:
-            page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=45_000)
-            login_state = detect_login_state(page)
-            while login_state != "logged-in" and time.monotonic() < deadline:
-                page.wait_for_timeout(2_000)
-                login_state = detect_login_state(page)
-            return {
-                "ok": login_state == "logged-in",
-                "mode": "prepare-login",
-                "generated_at": datetime.now(tz).isoformat(),
-                "profile_dir_used": str(args.profile_dir),
-                "login_state": login_state,
-                "current_url": page.url,
-                "headless": False,
-                "collection_started": False,
-                "credentials_handled_by_script": False,
-                "cookie_exported": False,
-            }
-        finally:
-            context.close()
+    browser_path = browsers[0]
+    command = [
+        str(browser_path),
+        f"--user-data-dir={args.profile_dir}",
+        "--new-window",
+        "https://x.com/home",
+    ]
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    proc = subprocess.Popen(command, close_fds=True, creationflags=creationflags)
+    return {
+        "ok": True,
+        "mode": "prepare-login",
+        "generated_at": datetime.now(tz).isoformat(),
+        "profile_dir_used": str(args.profile_dir),
+        "browser_path": str(browser_path),
+        "browser_pid": proc.pid,
+        "opened_url": "https://x.com/home",
+        "automation_browser": False,
+        "collection_started": False,
+        "credentials_handled_by_script": False,
+        "cookie_exported": False,
+        "next_step": "Log in manually in the opened browser, then close it before running a smoke collection.",
+    }
 
 
 def collect_from_x(args: argparse.Namespace, queries: list[str], windows: list[DateWindow], tz: tzinfo) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
@@ -342,8 +350,8 @@ def collect_from_x(args: argparse.Namespace, queries: list[str], windows: list[D
             page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=45_000)
             if "login" in page.url.lower():
                 raise RuntimeError(
-                    "X.com login is required. Run without --headless and log in manually; "
-                    "the profile directory stays local and must not be committed."
+                    "X.com login is required. Stop collection, run --prepare-login in an installed "
+                    "Chrome/Edge profile, log in manually there, close that browser, then retry."
                 )
             for query in queries:
                 for window in windows:
