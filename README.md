@@ -43,9 +43,16 @@ AI 분석 guard, 보고서 한계 문구까지 포함한다. CLI는 fixture/dry-
 `raw.csv`, `observed_posts.csv`, `manifest.json`, `gap_check.md` 생성을 검증할 수 있다.
 집이나 개인 환경에서 다른 주제의 소셜 반응을 모을 때 `README.md` 절차를 기준으로 사용.
 
+### `packages/query-analyst-ephemeral-runner/`
+로컬 파일 큐의 작업을 감지해 작업마다 fresh `codex exec --ephemeral` 세션을 실행하는
+PowerShell 러너. 긴 쿼리·로그·문서 근거 작업을 메인 에이전트 세션과 분리하고,
+`outputs/<task_id>/`와 runner log에 상세 산출물을 남긴다. 미니 PC에서 상시 러너를
+운영하거나 필요할 때 별도 에이전트를 띄우는 설치법, 보안 경계, 상태 머신, 장애 복구
+절차를 패키지 문서에 포함한다.
+
 ## 활용처 요약
 
-본 repo 가 다루는 패키지는 크게 다섯 갈래로 묶인다 (현 시점):
+본 repo 가 다루는 패키지는 크게 여섯 갈래로 묶인다 (현 시점):
 
 1. **외부 팀(분석팀) 세션 정리 자동화** — `analytics-leader-session-cleanup/`.
    private 운영 레포에 직접 접근 못 하는 외부 팀이 브라우저로 clone 해서 자기 환경에
@@ -63,6 +70,9 @@ AI 분석 guard, 보고서 한계 문구까지 포함한다. CLI는 fixture/dry-
 5. **공개 검색 기반 소셜 수집 운영 매뉴얼** — `packages/x-observed-search-collection/`.
    X.com full archive가 아닌 observed search dataset을 만들 때 필요한 query 설계, 1일
    window 재수집, union/dedupe, gap check, 보고서 표현 원칙을 공유한다.
+6. **작업별 fresh 분석 에이전트 러너** — `packages/query-analyst-ephemeral-runner/`.
+   파일 큐에 작업을 넣으면 독립 Codex 세션이 근거 산출물을 만들고 결과 상태를 기록한다.
+   사내 경로·데이터 소스·자격증명 없이 개인 Windows 환경에 맞게 구성할 수 있다.
 
 ## 환경 주의
 
